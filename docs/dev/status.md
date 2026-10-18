@@ -1,6 +1,6 @@
 # Status
 
-Paused 2026-10-15. Read this first when resuming.
+As of 2026-10-18. Read this first when resuming.
 
 ## Goal
 
@@ -13,9 +13,8 @@ nanodirt replaces SuperCollider + SuperDirt for users of TidalCycles, Strudel an
 | `docs/dev/integration.md` | Design: core plus per-front-end adapters, ports, CLI, order of work |
 | `docs/dev/superdirt-parameter-mapping.md` | Reference spec: SuperDirt event pipeline, fields, node/bus layout |
 | `docs/dev/spike-results.md` | What the spike proved, measured timings, findings |
-| nanosynth `docs/dev/livecoding.md` | Options considered (SuperDirt on nanosynth, nanodirt, uzu/dirt) and why nanodirt |
-| nanosynth `docs/dev/sc3-plugins-build.md` | sc3-plugins in the nanosynth wheel |
-| nanosynth `docs/dev/dirt-parameter-mapping.md` | Classic Dirt; superseded as reference, kept as a record |
+| nanosynth `docs/dev/roadmap.md` | Requirements, milestones and status across both packages |
+| nanosynth `docs/dev/livecoding.md` | Options considered and why nanodirt |
 
 ## Decisions
 
@@ -23,64 +22,60 @@ nanodirt replaces SuperCollider + SuperDirt for users of TidalCycles, Strudel an
 
 - nanodirt is a separate GPL-3 repo.
 
-- Strudel's superdough-only controls (167 of 293) are in scope, after SuperDirt parity.
-
-- sc3-plugins ship inside the nanosynth wheel, without HOA, NovaDiskIO and LADSPA. PitchDetection is built on macOS only.
-
-- vortex: nanodirt ships a replacement `vortex.boot` module (Link clock, `p`, `d`, `hush`) and registers it before starting vortex's own GUI or REPL. vortex is not bundled or forked.
+- SynthDefs are translated into the nanosynth DSL, not shipped as sclang-compiled binaries; each is checked against sclang's binary by rendered audio.
 
 - Strudel: nanodirt serves the WebSocket on 8080 itself; no Node bridge.
 
+- vortex: nanodirt ships a replacement `vortex.boot` module and registers it before starting vortex's own GUI or REPL.
+
 ## Done
 
-- **nanosynth** (committed, `7a212da`): sc3-plugins vendored in `thirdparty/sc3-plugins/`, 75 plugins per server, `FM7` and `PulseDPW` wrappers, render tests. `make test`: 2182 passed, 34 skipped on macOS arm64.
+| Milestone | What | Checked by |
+|-|-|-|
+| Package | `pyproject.toml`, Makefile (`make test`, `lint`, `typecheck`), ruff, mypy (strict outside the SynthDef modules) | - |
+| M1 | Sample library (lazy header + async read), event pipeline, cut groups, global effects with sleep/resume, core modules, UDP adapter with handshake, hello, setControlBus | `tests/test_event_parity.py`: 34 events give the same bundles as stock SuperDirt, bundle times within 5 ms. `tests/test_audio_parity.py`: a pattern recorded through both, RMS envelope correlation 0.9997, level ratio 0.999 |
+| M2 | WebSocket adapter, Strudel field rules (`sustain`, `clip`, `duration`, `channels`), default sample maps and bank aliases, background download, pitched banks, ffmpeg transcoding of MP3 | `tests/test_dirt.py` (unit); live smoke test downloading `tr909` from the CDN |
+| M3 | `nanodirt.vortex.boot`, `nanodirt vortex [--cli]` | `tests/test_vortex.py`: headless playback through `vortex_dsl()`; vortex.stream and pyliblo3 not imported; public-name check against vortex's own `boot.py` |
+| M4 | 25 core and global SynthDefs, 43 instruments, 20 extra effect modules | `tests/test_synthdef_parity.py`, `test_instrument_parity.py`, `test_effect_parity.py`: rendered against sclang's compiled SynthDefs (`tests/fixtures/superdirt_defs/`), 1e-4 tolerance, or by level for graphs with random draws |
 
-- **Spike** (`spike/`, uncommitted, throwaway). Played audio, recorded and checked:
-  - Tidal 1.10.3 with stock `BootTidal.hs`: handshake ("Connected to SuperDirt."), bus params as `"cN"`, events 0.25-0.29 s early.
-  - vortex in-process via the `vortex.boot` replacement: on time, pyliblo3 never loaded.
-  - Strudel on strudel.cc in Chrome: works after the Local Network Access prompt; timestamps exact; events about 0.29 s early.
-  - Strudel in Safari: no connection reached the spike.
+Behaviour found by the oracle and reproduced:
 
-## Not done / unverified
+- sclang sends an absent (`nil`) value as int 0. `vowel` without `resonance` gets 0, `tremolorate` without `tremolodepth` gets depth 0, and an event without `delaytime` after one with it resets the delay time to 0.
 
-- **Linux and Windows builds of sc3-plugins.** They have not run. Check the CI run of `7a212da`; the Windows flags in `cmake/sc3_plugins.cmake` are untested.
+- An unknown sound still plays: SuperDirt resumes the effects and sends the gate, without a source.
 
-- **Safari.** The error was not captured. Develop > Show JavaScript Console while evaluating `s("bd").osc()` on strudel.cc.
+- SuperDirt's "do nothing" is `s` equal to the empty symbol, not a backslash.
 
-- **Firefox.** Untested.
+## Not done
 
-- `CLAUDE.md` in nanosynth does not mention `thirdparty/sc3-plugins` under Vendored Dependencies.
+- **M5, superdough controls.** Not started. Needs a decision: for WebSocket events, follow superdough (Strudel code sounds as on strudel.cc) or SuperDirt (as Strudel + SuperDirt sounds today). The two disagree on shared names: the gain curve, `room`, `delay`, filter resonance. There is no headless superdough to test against.
 
-- `docs/` and `spike/` in this repo are uncommitted.
+- **`superprimes`** renders silence in NRT, in SuperDirt's own build as in nanodirt's; not investigated.
 
-## Next
+- **Random instruments** (`superhammond` phases, `superfm` presets and `detune` defaults) are drawn when SuperDirt loads, differently each load; nanodirt fixes a seed.
 
-1. **Package setup:** `pyproject.toml` (GPL-3, depends on nanosynth with bundled sc3-plugins; `websockets` as a dependency), Makefile with `make test`/`lint`/`typecheck`, CI. Python 3.10-3.14 to match nanosynth. The vortex path needs 3.11-3.13.
+- **`IEnvGen`/`DirtEnvGen`**, the `smpl` metadata (`metatune`), `dirt_rms` replies to the editor, `/dirt/synth-info` beyond control names.
 
-2. **Phase 1 core,** per `integration.md` "Order of work" and `superdirt-parameter-mapping.md`: sample library, event pipeline (defaults, `splitName`, `calcTimeSpan`, `finaliseParameters`), `dirt_sample_*`, `dirt_gate`, cut groups, `lpf`/`hpf`/`bpf`. Make the core a pure function from event to OSC bundles, so most tests need no audio. Use nanosynth `Score` for offline render tests.
+- **Strudel in Safari** (no connection in the spike) and Firefox: untested. vortex's GUI and REPL: not driven interactively.
 
-3. **UDP adapter:** `/dirt/play`, `/dirt/handshake` with 128 control buses, `/dirt/hello`.
+- **Release:** nanodirt pins nanosynth by path; it needs a nanosynth release that ships sc3-plugins.
 
-4. **Requirements from the spike:**
-   - load samples in the background, off the receive path (each first hit cost about 30 ms);
-   - drop events later than a threshold (about 50 ms) and log a count (Strudel sent one 2.97 s late);
-   - on a failed bind, name the process holding the port (port 8080 was taken by a llama.cpp server).
+## Testing
 
-5. Then: WebSocket adapter and Strudel sample maps; `nanodirt vortex`; orbits and global effects; remaining modules and `super*` synths; superdough controls.
+```bash
+make test                                  # unit, SynthDef parity (NRT), adapters
+NANODIRT_TEST_ORACLE=1 make test           # plus event and audio parity against SuperDirt
+uv run --with "git+https://codeberg.org/uzu/vortex" pytest tests/test_vortex.py
+```
 
-## Open questions
-
-- Strudel `sustain` over UDP (desktop app, Node bridge): a `--strudel` flag, or detect Strudel from its fields?
-
-- Upstream PRs: a configurable WebSocket port in Strudel (8080 is hardcoded in `osc.mjs:15`); a DSL-module hook in vortex.
+The oracle runs stock SuperDirt on nanosynth's engine through headless sclang: `python scripts/superdirt_oracle.py setup` in nanosynth builds it under `~/.cache/nanodirt`.
 
 ## Environment
 
-| Item | Location | Note |
-|-|-|-|
-| Dirt-Samples | `~/.cache/nanodirt/Dirt-Samples` | shallow clone of github.com/tidalcycles/Dirt-Samples |
-| Tidal 1.10.3 | `~/.cabal/store/ghc-9.6.7` | built for the spike. The package environment was in a session scratchpad and is gone. Recreate: `cabal install tidal-1.10.3 --lib --package-env <dir>/tidal.env`, then `ghci -package-env <dir>/tidal.env` with `:script BootTidal.hs` |
-| vortex | not installed | `uv venv -p 3.12 vx && uv pip install git+https://codeberg.org/uzu/vortex` |
-| Spike | `spike/` | `uv run --with nanosynth==0.4.1 --with websockets python spike.py`. Needs ports 57120, 57110 and 8080 free (stop SuperCollider and any llama server). `probe_udp.py` and `probe_ws.mjs` send Tidal- and Strudel-shaped test events. `spike_vortex.py --auto 4` runs vortex headless. vortex in `spike_vortex.py` needs the vx venv plus nanosynth and websockets |
+| Item | Location |
+|-|-|
+| Dirt-Samples | `~/.cache/nanodirt/Dirt-Samples` (`nanodirt samples fetch`) |
+| Strudel maps and samples | `~/.cache/nanodirt/strudel` |
+| sclang 3.14.1, sc3-plugins classes, SuperDirt `650a1d6`, Vowel | `~/.cache/nanodirt/src`, `~/.cache/nanodirt/quarks` |
 
-Upstream revisions read: SuperDirt `650a1d6`, Tidal `5ae6552` (codeberg.org/uzu/tidal), Strudel `a3302cf`, vortex `aefea84`, uzu/dirt `123b399`, sc3-plugins `Version-3.14.1`.
+Upstream revisions read: SuperDirt `650a1d6`, Tidal `5ae6552`, Strudel `a3302cf`, vortex `aefea84`, sc3-plugins `Version-3.14.1`.

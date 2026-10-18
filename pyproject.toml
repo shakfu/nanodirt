@@ -1,0 +1,58 @@
+[project]
+name = "nanodirt"
+version = "0.1.0"
+description = "SuperDirt's event model on nanosynth: a Dirt backend for TidalCycles, Strudel and vortex"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+authors = [{ name = "Shakeeb Alireza", email = "shakfu@users.noreply.github.com" }]
+requires-python = ">=3.10"
+dependencies = [
+    "nanosynth>=0.4.1",
+    "websockets>=13",
+]
+
+[project.scripts]
+nanodirt = "nanodirt.cli:main"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+    "numpy>=1.21",
+    "pytest>=8",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.15.1",
+]
+
+[tool.uv.sources]
+nanosynth = { path = "../nanosynth", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nanodirt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+# ruff's classic defaults; newer ruff releases enable more rules by default.
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.mypy]
+strict = true
+
+# SynthDef modules: nanosynth generates UGen rate methods (.ar, .kr) at import
+# time and builds graphs from untyped arithmetic, so mypy cannot see them.
+[[tool.mypy.overrides]]
+module = ["nanodirt.synthdefs", "nanodirt.instruments", "nanodirt.effects", "nanodirt.ugens"]
+disable_error_code = ["attr-defined", "operator", "no-any-return", "arg-type", "union-attr", "call-overload", "misc", "index", "return-value", "assignment", "list-item"]
+
+[[tool.mypy.overrides]]
+module = ["vortex", "vortex.*", "link"]
+ignore_missing_imports = true
