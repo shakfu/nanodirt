@@ -4,7 +4,7 @@ As of 2026-10-18. Read this first when resuming.
 
 ## Goal
 
-nanodirt replaces SuperCollider + SuperDirt for users of TidalCycles, Strudel and vortex. It reimplements SuperDirt's event model on nanosynth's embedded scsynth. It is a GPL-3 package that depends on MIT nanosynth.
+nanodirt replaces SuperCollider + SuperDirt for users of TidalCycles, Strudel and vortex. It reimplements SuperDirt's event model on nanosynth's embedded scsynth. It is GPL-3.0-or-later and depends on MIT nanosynth: a translation of SuperDirt (GPL-2.0-or-later) inherits the GPL. Licences and packaging: nanosynth `docs/dev/nanodirt-integration.md`.
 
 ## Documents
 
@@ -20,7 +20,7 @@ nanodirt replaces SuperCollider + SuperDirt for users of TidalCycles, Strudel an
 
 - SuperDirt is the reference semantics. Classic Dirt (uzu/dirt) is not a target.
 
-- nanodirt is a separate GPL-3 repo.
+- nanodirt is a separate GPL-3.0-or-later repo.
 
 - SynthDefs are translated into the nanosynth DSL, not shipped as sclang-compiled binaries; each is checked against sclang's binary by rendered audio.
 
@@ -48,17 +48,7 @@ Behaviour found by the oracle and reproduced:
 
 ## Not done
 
-- **M5, superdough controls.** Not started. Needs a decision: for WebSocket events, follow superdough (Strudel code sounds as on strudel.cc) or SuperDirt (as Strudel + SuperDirt sounds today). The two disagree on shared names: the gain curve, `room`, `delay`, filter resonance. There is no headless superdough to test against.
-
-- **`superprimes`** renders silence in NRT, in SuperDirt's own build as in nanodirt's; not investigated.
-
-- **Random instruments** (`superhammond` phases, `superfm` presets and `detune` defaults) are drawn when SuperDirt loads, differently each load; nanodirt fixes a seed.
-
-- **`IEnvGen`/`DirtEnvGen`**, the `smpl` metadata (`metatune`), `dirt_rms` replies to the editor, `/dirt/synth-info` beyond control names.
-
-- **Strudel in Safari** (no connection in the spike) and Firefox: untested. vortex's GUI and REPL: not driven interactively.
-
-- **Release:** nanodirt pins nanosynth by path; it needs a nanosynth release that ships sc3-plugins.
+Pending work is tracked in nanosynth's `TODO.md`, section "Dirt-protocol backend" (items marked "(nanodirt)").
 
 ## Testing
 
