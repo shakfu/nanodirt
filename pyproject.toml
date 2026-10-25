@@ -6,10 +6,31 @@ readme = "README.md"
 license = "GPL-3.0-or-later"
 authors = [{ name = "Shakeeb Alireza", email = "shakfu@users.noreply.github.com" }]
 requires-python = ">=3.10"
+keywords = ["superdirt", "tidalcycles", "strudel", "vortex", "supercollider", "live-coding"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Other Audience",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Artistic Software",
+    "Topic :: Multimedia :: Sound/Audio :: Sound Synthesis",
+]
 dependencies = [
-    "nanosynth>=0.4.1",
+    "nanosynth>=0.5.0",
     "websockets>=13",
 ]
+
+[project.urls]
+Homepage = "https://github.com/shakfu/nanodirt"
+Repository = "https://github.com/shakfu/nanodirt"
+Issues = "https://github.com/shakfu/nanodirt/issues"
+Changelog = "https://github.com/shakfu/nanodirt/blob/main/CHANGELOG.md"
 
 [project.scripts]
 nanodirt = "nanodirt.cli:main"
@@ -21,6 +42,7 @@ dev = [
     "pytest>=8",
     "pytest-cov>=7.0.0",
     "ruff>=0.15.1",
+    "twine>=7.0.0",
 ]
 
 [tool.uv.sources]
@@ -32,6 +54,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/nanodirt"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["spike"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
