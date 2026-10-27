@@ -24,13 +24,13 @@ Files are concentrated in a few repos:
 
 | Repo | Files | Content |
 |-|-|-|
-| `tzfm/rustel` | 1,496 | Test scores, one per Strudel jsdoc example |
+| `tzfm/rustel` | 1,446 | Test scores, one per Strudel jsdoc example |
 | `nukleas/cycletron` | 185 | Pattern corpus |
-| `calv-io-n/strudel-studio` | 125 | Song sets |
-| `fatmmouse/beatdarwin-canon` | 100 | Songs, plus golden copies |
+| `calv-io-n/strudel-studio` | 124 | Song sets |
 | `jan-oboth/strudel` | 59 | Songs |
+| `MrityunjayBhardwaj/Stave` | 57 | Parser test corpus |
 
-55 repos hold one file. Per-file shares therefore describe `tzfm/rustel`, so the unit of analysis is the repo.
+Counts are distinct files with pattern calls. 54 repos hold one file. Per-file shares therefore describe `tzfm/rustel`, so the unit of analysis is the repo.
 
 ## Method
 
@@ -38,7 +38,7 @@ Files are concentrated in a few repos:
 
 - **Interval:** 95% bootstrap over repos (2,000 resamples). It covers sampling noise only, not selection bias.
 
-- **Sensitivity:** recomputed without repos whose names suggest generated code (`agent`, `gpt`, `vibe`, `harness`, ...; 5 repos) and without editor or tool repos (`vim`, `vscode`, `cli`, `server`, ...; 11 more). No share below moves by more than 3 points.
+- **Sensitivity:** recomputed without repos whose names suggest generated code (`agent`, `gpt`, `vibe`, `harness`, ...; 5 repos) and without editor or tool repos (`vim`, `vscode`, `cli`, `server`, ...; 11 more). No share of 3% or more moves by more than 2.5 points.
 
 - **Controls:** every `registerControl` and `registerMultiControl` call in `packages/core/controls.mjs`, aliases resolved, FM numbered variants folded. 247 of the 277 are audio controls; the rest are tagged `tonal`, `midi`, `external_io` or `visualization`, or are display controls (`color`, `label`, ...).
 
@@ -53,6 +53,15 @@ Limits:
 - Public GitHub is a small, self-selected part of Strudel use. Most users write on strudel.cc and commit nothing.
 
 - The reference docs (`learn/*.mdx`) are excluded from the Teaching corpus: they show every control by design. `tzfm/rustel` contains the same material but counts as one repo.
+
+## Reproducing
+
+```bash
+python scripts/strudel_usage_fetch.py <github dir>        # needs an authenticated gh; about 10 minutes
+uv run python scripts/strudel_usage.py <strudel checkout> <github dir>
+```
+
+`<strudel checkout>` is Strudel at `a3302cf`. The GitHub results change as files are added or removed, so a rerun gives different counts.
 
 ## Results
 
