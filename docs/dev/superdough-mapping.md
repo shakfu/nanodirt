@@ -152,7 +152,7 @@ The source stops at `end + release + 0.01`.
 
 - `ftype` 0 (`12db`, default): one `BiquadFilterNode`. `ftype` 2 (`24db`): two in series. `ftype` 1 (`ladder`): a Moog-style worklet with `drive` (default 0.69) (`worklets.mjs:365-427`).
 
-- `resonance` (`hresonance`, `bandq`) is the biquad Q, default 1. SuperDirt maps a 0-1 `resonance` to `rq` from 1 to 0.001.
+- `resonance` (`hresonance`, `bandq`) is the biquad Q, default 1: in dB for lowpass and highpass (`alpha = sin(w0) / (2 * 10^(Q/20))`), linear for bandpass, per the Web Audio spec. SuperDirt maps a 0-1 `resonance` to `rq` from 1 to 0.001.
 
 - Envelope: active when any of `lpattack`, `lpdecay`, `lpsustain`, `lprelease`, `lpenv` is set (`hp*`, `bp*` likewise). `env` (octaves, default 1) and `fanchor` (default 0) give `min = 2^(-|env|*anchor) * f`, `max = 2^(|env| - |env|*anchor) * f`, both clamped to 20 kHz; negative `env` swaps them. Exponential, defaults `[0.005, 0.14, 0, 0.1]`.
 
@@ -228,7 +228,15 @@ Comparison:
 
 1. Oscillators and noise, with the envelope, gain and pitch rules above. Done 2026-10-27 (`nanodirt/dough.py`): sine matches superdough within 1e-3 sample by sample; `square` and `sawtooth` levels within 3% after scaling by 1.69; noise within 2-30% by type. Not yet: `n` (partials), `noise` mix, `vib`, `penv`, FM.
 
-2. Gain, filters (12 dB biquad, envelope), pan, `postgain`, orbit delay and reverb, for all sources on the Strudel path. Gain, `pan`, `postgain` and samples done 2026-10-27: a voice is a group (source synth, then `dough_gate`), as in SuperDirt; samples, `pan` and envelopes match superdough within 0.3% of the peak, sample by sample. Not yet: filters, orbit delay and reverb, effects; `loop` is implemented but not checked against the oracle.
+2. Gain, filters (12 dB biquad, envelope), pan, `postgain`, orbit delay and reverb, for all sources on the Strudel path. Gain, `pan`, `postgain` and samples done 2026-10-27: a voice is a group (source synth, then `dough_gate`), as in SuperDirt; samples, `pan` and envelopes match superdough within 0.3% of the peak, sample by sample. Filters done 2026-10-27: Web Audio's biquad coefficients, recomputed every sample, in direct form I as Chrome's biquad; within 0.3% of the peak for fixed cutoffs and 0.5% for swept ones. Not yet: the ladder filter (`ftype` 1, plays as 12 dB), filter LFOs, orbit delay and reverb, effects; `loop` is implemented but not checked against the oracle.
+
+   Findings that shaped it:
+
+   - Direct form II (SuperCollider's `SOS`) and direct form I agree for fixed coefficients but diverge while the cutoff moves: 43% error in a 5 ms cutoff attack, against 0.4% in direct form I.
+
+   - EnvGen spends one sample on each zero-length segment, so the envelope drops empty stages and pads after the release.
+
+   - When a sample's buffer runs out, superdough releases the voice chain in `onended`, cutting filter tails a few milliseconds later in realtime; nanodirt ends the voice at the buffer's end. In the offline oracle the tail instead stops on Chrome's own biquad tail time, so tests compare up to the buffer's end.
 
 3. Controls by usage: filter envelope, FM, ducking, pitch envelope, `vib`, `compressor`, `supersaw` `unison`.
 

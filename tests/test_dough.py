@@ -76,6 +76,18 @@ def nrt(
     flat = lambda d: [x for kv in d.items() for x in kv]  # noqa: E731
     score.add(0.0, OscMessage("/g_new", 900, 0, 0))
     score.add(0.0, OscMessage("/s_new", v.source, 1000, 0, 900, *flat(source)))
+    for k, (kind, c) in enumerate(v.filters):
+        score.add(
+            0.0,
+            OscMessage(
+                "/s_new",
+                f"dough_{kind}{v.channels}",
+                1002 + k,
+                1,
+                900,
+                *flat({"out": SYNTH_BUS, **c}),
+            ),
+        )
     score.add(
         0.0,
         OscMessage("/s_new", f"dough_gate{v.channels}_{NUM_CHANNELS}", 1001, 1, 900, *flat(gate)),
@@ -105,11 +117,17 @@ def max_diff(a: Frames, b: Frames) -> float:
     return max(max(abs(p[0] - q[0]), abs(p[1] - q[1])) for p, q in zip(a, b))
 
 
-def matches(ref: Frames, got: Frames) -> bool:
-    """Equal within 0.3% of the peak. Web Audio places envelope breakpoints in continuous
-    time; EnvGen moves them to whole samples, which costs up to 0.23% next to a breakpoint."""
+def matches(
+    ref: Frames, got: Frames, tolerance: float = 0.003, skip: tuple[int, int] = (0, 0)
+) -> bool:
+    """Equal within *tolerance* of the peak, ignoring frames in *skip*.
+
+    Web Audio places envelope breakpoints in continuous time; EnvGen moves them to
+    whole samples, which costs up to 0.23% next to a breakpoint.
+    """
     peak = max(max(abs(p[0]), abs(p[1])) for p in ref)
-    return max_diff(ref, got) <= 0.003 * peak
+    pairs = [(p, q) for k, (p, q) in enumerate(zip(ref, got)) if not skip[0] <= k < skip[1]]
+    return max_diff([p for p, _ in pairs], [q for _, q in pairs]) <= tolerance * peak
 
 
 class TestRules:
@@ -261,10 +279,56 @@ def test_waveform_level(sd: Any, s: str, note: int) -> None:
     assert rms(got, 0.7, 0.8) == rms(ref, 0.7, 0.8) == 0.0
 
 
+def test_crackle_density_offline() -> None:
+    # superdough sets a sample to uniform(-1, 1) with probability density * 0.01
+    # (noise.mjs): mean square p/3. ~170 impulses in 20 s: relative sd ~5%.
+    p = dough.CRACKLE_DENSITY * 0.01
+    x = nrt({"s": "crackle", "delta": 20.0}, 20.1)
+    expected = 0.3 * 0.8 * 0.6 * math.sqrt(p / 3)
+    assert rms(x, 0.1, 19.9) == pytest.approx(expected, rel=0.2)
+
+
 @oracle
-@pytest.mark.parametrize("s", ["white", "pink", "brown", "crackle"])
+@pytest.mark.parametrize("s", ["white", "pink", "brown"])  # crackle: too sparse to compare
 def test_noise_level(sd: Any, s: str) -> None:
     ref = reference(sd, {"s": s}, 1.8, 2.0)
     got = nrt({"s": s, "delta": 1.8}, 2.0)
-    tolerance = {"white": 0.02, "pink": 0.15, "brown": 0.3, "crackle": 0.3}[s]
+    tolerance = {"white": 0.02, "pink": 0.15, "brown": 0.3}[s]
     assert rms(got, 0.1, 1.75) == pytest.approx(rms(ref, 0.1, 1.75), rel=tolerance)
+
+
+# On samples: they play identically in both engines, so the filter is compared alone.
+FILTERED: list[dict[str, Any]] = [
+    {"cutoff": 800},
+    {"cutoff": 800, "resonance": 12},  # Q in dB
+    {"hcutoff": 1500, "hresonance": 6},
+    {"bandf": 1000, "bandq": 4},  # linear Q
+    {"cutoff": 600, "ftype": 2},  # 24 dB: two in series
+    {"cutoff": 300, "lpenv": 4},
+    {"cutoff": 300, "lpenv": 3, "lpattack": 0.05, "lpdecay": 0.1, "lpsustain": 0.4},
+    {"cutoff": 2000, "lpenv": -3, "lpdecay": 0.2},
+    {"cutoff": 800, "lpenv": 2, "fanchor": 0.5, "lprelease": 0.2},
+    {"cutoff": 300, "lpenv": 4, "lpattack": 0.5},  # longer than the note
+    {"hcutoff": 200, "hpenv": 3, "hpdecay": 0.1},
+    {"s": "stereo", "cutoff": 1200, "hcutoff": 300, "resonance": 5},
+]
+
+
+@oracle
+@pytest.mark.parametrize(
+    "extra", FILTERED, ids=lambda e: ",".join(f"{k}={v}" for k, v in e.items())
+)
+def test_filter_matches_sample_by_sample(
+    sd: Any, banks: dict[str, list[Path]], extra: dict[str, Any]
+) -> None:
+    value = {"s": "mono", "n": 1, **extra}
+    ref = reference(sd, value, 0.2, 0.5)
+    got = nrt({**value, "delta": 0.2}, 0.5, banks)
+    assert max(abs(left) for left, _ in ref) > 0.02, "silent reference"
+    # After the buffer runs out, the tail depends on engine timing: superdough releases the
+    # chain when onended runs (a few ms in realtime, after the offline render ends), and Chrome
+    # stops a silent biquad after a tail time of its own. Compare up to the buffer's end.
+    end = read_header(banks[value["s"]][1]).frames
+    swept = any(k.endswith(("env", "attack", "decay", "sustain", "release")) for k in extra)
+    # A moving cutoff: 32-bit coefficients near the unit circle (Chrome's are 64-bit).
+    assert matches(ref, got, 0.005 if swept else 0.003, skip=(end, len(ref)))

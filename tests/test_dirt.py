@@ -285,6 +285,13 @@ class TestStrudel:
         assert src["out"] == gt["in"] == orbit.synth_bus and gt["out"] == orbit.dry_bus
         assert src["freq"] == pytest.approx(220.0) and gt["level"] == pytest.approx(0.8)
 
+    def test_strudel_filters_sit_between_source_and_gate(self, dirt: Dirt) -> None:
+        dirt.play_strudel(
+            {"s": "pad", "cutoff": 800, "hcutoff": 200, "delta": 0.2}, time.time() + 0.2
+        )
+        names = [m[1] for m in bundles(dirt)[0] if m[0] == "/s_new"]
+        assert names == ["dough_sample2", "dough_lpf2", "dough_hpf2", "dough_gate2_2"]
+
     def test_strudel_sample_plays_its_slice(self, dirt: Dirt) -> None:
         dirt.play_strudel({"s": "bd", "n": 1, "delta": 0.05, "note": 48}, time.time() + 0.2)
         source = s_new(bundles(dirt)[0], "dough_sample1")

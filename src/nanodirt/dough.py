@@ -11,17 +11,19 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from nanosynth.envelopes import Envelope, EnvGen
 from nanosynth.synthdef import SynthDef, SynthDefBuilder, control
 from nanosynth.ugens import (
     DC,
+    SOS,
     BufRateScale,
     BufRd,
     BufSampleRate,
     Delay1,
+    Delay2,
     Dust2,
     Impulse,
     In,
@@ -70,6 +72,7 @@ class Voice:
     sample: Sample | None = None
     cut: int | None = None
     nudge: float = 0.0
+    filters: list[tuple[str, dict[str, float]]] = field(default_factory=list)
 
 
 SILENT = Voice("", {}, 1, {})  # a superdough source that plays nothing (speed 0)
@@ -92,9 +95,9 @@ def adsr_values(
 
 
 def envelope_points(
-    adsr: tuple[float, float, float, float], duration: float
+    adsr: tuple[float, float, float, float], duration: float, lo: float = 0.0, hi: float = 1.0
 ) -> tuple[list[float], list[float]]:
-    """``getParamADSR`` from 0 to 1, linear: target levels and times of 4 segments.
+    """``getParamADSR`` from *lo* to *hi*: target levels and times of 4 segments.
 
     A note shorter than attack or attack + decay stops its ramp where the full
     envelope would be at its end. Empty stages are dropped and the release is
@@ -114,8 +117,8 @@ def envelope_points(
         stages = [(1.0, attack), (at(duration), duration - attack)]
     else:
         stages = [(1.0, attack), (sustain, decay), (sustain, duration - attack - decay)]
-    stages = [st for st in stages if st[1] > 0] + [(0.0, release)]
-    stages += [(0.0, 0.0)] * (4 - len(stages))
+    stages = [(lo + lv * (hi - lo), t) for lv, t in stages if t > 0] + [(lo, release)]
+    stages += [(lo, 0.0)] * (4 - len(stages))
     return [lv for lv, _ in stages], [t for _, t in stages]
 
 
@@ -172,6 +175,60 @@ def _gate(e: Mapping[str, Any], life: float) -> dict[str, float]:
     }
 
 
+FILTERS = [  # superdough.mjs: lowpass, highpass, bandpass, in that order
+    ("lpf", "cutoff", "resonance", "lp"),
+    ("hpf", "hcutoff", "hresonance", "hp"),
+    ("bpf", "bandf", "bandq", "bp"),
+]
+FILTER_ENVELOPE = (0.005, 0.14, 0.0, 0.1)  # createFilter's defaults
+MAX_FILTER_FREQ = 20000.0
+
+
+def filter_type(ftype: Any) -> str:
+    """``getFilterType``: 0 ``12db`` (default), 1 ``ladder``, 2 ``24db``, or the name."""
+    if ftype is None:
+        return "12db"
+    if isinstance(ftype, (int, float)) and not isinstance(ftype, bool):
+        return ["12db", "ladder", "24db"][math.floor(ftype) % 3]
+    return str(ftype)
+
+
+def filters(e: Mapping[str, Any], duration: float) -> list[tuple[str, dict[str, float]]]:
+    """``createFilter`` for each filter the event sets: SynthDef kind and controls.
+
+    The cutoff envelope runs from the event's onset to ``onset + duration``. The
+    ladder model (``ftype`` 1) is not implemented; it plays as ``12db``.
+    """
+    out = []
+    stages = 2.0 if filter_type(e.get("ftype")) == "24db" else 1.0
+    for kind, key, q_key, p in FILTERS:
+        freq = _number(e.get(key))
+        if freq is None:
+            continue
+        q = _number(e.get(q_key))
+        controls = {"q": 1.0 if q is None else q, "stages": stages}
+        values = tuple(_number(e.get(p + k)) for k in ("attack", "decay", "sustain", "release"))
+        env = _number(e.get(p + "env"))
+        if env is None and all(v is None for v in values):
+            levels, times, start = [freq] * 4, [0.0] * 4, freq
+        else:
+            env = 1.0 if env is None else env
+            anchor = _number(e.get("fanchor")) or 0.0
+            offset = abs(env) * anchor
+            lo = min(max(2**-offset * freq, 0.0), MAX_FILTER_FREQ)
+            hi = min(max(2 ** (abs(env) - offset) * freq, 0.0), MAX_FILTER_FREQ)
+            if env < 0:
+                lo, hi = hi, lo
+            lo, hi = lo or 0.001, hi or 0.001  # exponential ramps cannot reach 0
+            levels, times = envelope_points(adsr_values(values, FILTER_ENVELOPE), duration, lo, hi)
+            start = lo
+        controls["f0"] = start
+        controls |= {f"f{i + 1}": v for i, v in enumerate(levels)}
+        controls |= {f"ft{i + 1}": v for i, v in enumerate(times)}
+        out.append((kind, controls))
+    return out
+
+
 def voice(
     e: Mapping[str, Any], num_channels: int, find_sample: FindSample | None = None
 ) -> Voice | None:
@@ -187,7 +244,7 @@ def voice(
         controls = {"amp": SOURCE_LEVEL, "freq": frequency(e), **env}
         if name == "crackle":
             controls["density"] = _number(e.get("density")) or CRACKLE_DENSITY
-        return Voice(f"dough_{name}", controls, 1, _gate(e, life))
+        return Voice(f"dough_{name}", controls, 1, _gate(e, life), filters=filters(e, duration))
     if find_sample is None:
         return None
     return _sample_voice(e, name, duration, find_sample)
@@ -221,9 +278,13 @@ def _sample_voice(
     loop = bool(e.get("loop"))
     if e.get("clip") is None and e.get("loop") is None and e.get("release") is None:
         duration = (end - begin) * header.duration / rate  # the slice
+    filter_controls = filters(e, float(e.get("delta") or 0.0))  # from onset to the hap's end
     env, life = _envelope(e, SAMPLE_ENVELOPE, duration)
     frames = header.frames
     offset = begin * frames
+    if not loop:
+        # When the buffer runs out, onended releases the whole chain, cutting filter tails.
+        life = min(life, (frames - offset) / (rate * header.sample_rate))
     loop_begin, loop_end = (_number(e.get(k)) for k in ("loopBegin", "loopEnd"))
     loop_begin, loop_end = (
         (0.0 if loop_begin is None else loop_begin),
@@ -253,6 +314,7 @@ def _sample_voice(
         sample=sample,
         cut=None if cut is None else int(cut),
         nudge=_number(e.get("nudge")) or 0.0,
+        filters=filter_controls,
     )
 
 
@@ -333,6 +395,50 @@ def _sample(channels: int) -> SynthDef:
     return b.build(name=f"dough_sample{channels}")
 
 
+def _biquad(kind: str, x: Any, freq: Any, q: Any) -> Any:
+    """``BiquadFilterNode`` (Web Audio's coefficients), recomputed every sample.
+
+    Q is in dB for lowpass and highpass, linear for bandpass.
+    """
+    w0 = 2 * math.pi * freq.clip(0, SampleRate.ir() * 0.5) / SampleRate.ir()
+    cos, sin = w0.cos_(), w0.sin_()
+    alpha = sin / (2 * (q if kind == "bpf" else 10 ** (q / 20)))
+    if kind == "lpf":
+        b0, b1, b2 = (1 - cos) / 2, 1 - cos, (1 - cos) / 2
+    elif kind == "hpf":
+        b0, b1, b2 = (1 + cos) / 2, -(1 + cos), (1 + cos) / 2
+    else:
+        b0, b1, b2 = alpha, alpha * 0, -alpha
+    a0 = 1 + alpha
+    # Direct form I, as Chrome's Biquad: y = b0 x + b1 x[-1] + b2 x[-2] - a1 y[-1] - a2 y[-2].
+    # The structures agree for fixed coefficients and diverge while the cutoff moves.
+    ff = (b0 * x + b1 * Delay1.ar(source=x) + b2 * Delay2.ar(source=x)) / a0
+    one, zero = DC.ar(source=1), DC.ar(source=0)  # all coefficients audio rate: SOS_next_a
+    return SOS.ar(source=ff, a_0=one, a_1=zero, a_2=zero, b_1=2 * cos / a0, b_2=(alpha - 1) / a0)
+
+
+def _filter(kind: str, channels: int) -> SynthDef:
+    """A filter in a voice's chain, rewriting the synth bus in place; ``24db`` is two in series."""
+    controls = {"out": control(0, "ir"), "q": control(1.0, "ir"), "stages": control(1.0, "ir")}
+    controls |= {f"f{i}": control(1000.0, "ir") for i in range(5)}
+    controls |= {f"ft{i}": control(0.0, "ir") for i in (1, 2, 3, 4)}
+    with SynthDefBuilder(**controls) as b:
+        freq = EnvGen.ar(
+            envelope=Envelope(
+                amplitudes=[b[f"f{i}"] for i in range(5)],
+                durations=[b[f"ft{i}"] for i in (1, 2, 3, 4)],
+                curves=["exponential"],
+            )
+        )
+        x = In.ar(bus=b["out"], channel_count=channels)
+        xs = list(x) if channels > 1 else [x]
+        once = [_biquad(kind, c, freq, b["q"]) for c in xs]
+        twice = [_biquad(kind, c, freq, b["q"]) for c in once]
+        y = [Select.ar(selector=b["stages"] > 1, sources=[o, t]) for o, t in zip(once, twice)]
+        ReplaceOut.ar(bus=b["out"], source=y if channels > 1 else y[0])
+    return b.build(name=f"dough_{kind}{channels}")
+
+
 def _gate_def(channels: int, num_channels: int) -> SynthDef:
     """``StereoPannerNode`` (Web Audio's equal-power rules for mono and stereo input), postgain."""
     controls = {
@@ -381,6 +487,7 @@ def synthdefs(num_channels: int) -> list[SynthDef]:
             Out.ar(bus=b["out"], source=_source(name, b["freq"], b["density"]) * _env(b) * b["amp"])
         defs.append(b.build(name=f"dough_{name}"))
     defs += [_sample(1), _sample(2), _gate_def(1, num_channels), _gate_def(2, num_channels)]
+    defs += [_filter(kind, c) for kind, *_ in FILTERS for c in (1, 2)]
     return defs
 
 
@@ -391,6 +498,8 @@ __all__ = [
     "Voice",
     "adsr_values",
     "envelope_points",
+    "filter_type",
+    "filters",
     "frequency",
     "midi",
     "synthdefs",

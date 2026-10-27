@@ -423,6 +423,17 @@ class Dirt:
         msgs += [
             OscMessage("/g_new", group, 1, orbit.group),
             OscMessage("/s_new", v.source, -1, 0, group, *_pairs(_flat(source))),
+            *[
+                OscMessage(
+                    "/s_new",
+                    f"dough_{kind}{v.channels}",
+                    -1,
+                    1,
+                    group,
+                    *_pairs(_flat({"out": orbit.synth_bus, **c})),
+                )  # fmt: skip
+                for kind, c in v.filters
+            ],
             OscMessage(
                 "/s_new",
                 f"dough_gate{v.channels}_{self.num_channels}",
