@@ -75,7 +75,7 @@ strict = true
 # SynthDef modules: nanosynth generates UGen rate methods (.ar, .kr) at import
 # time and builds graphs from untyped arithmetic, so mypy cannot see them.
 [[tool.mypy.overrides]]
-module = ["nanodirt.synthdefs", "nanodirt.instruments", "nanodirt.effects", "nanodirt.ugens"]
+module = ["nanodirt.synthdefs", "nanodirt.instruments", "nanodirt.effects", "nanodirt.ugens", "nanodirt.dough"]
 disable_error_code = ["attr-defined", "operator", "no-any-return", "arg-type", "union-attr", "call-overload", "misc", "index", "return-value", "assignment", "list-item"]
 
 [[tool.mypy.overrides]]

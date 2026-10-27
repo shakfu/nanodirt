@@ -12,6 +12,8 @@ nanodirt replaces SuperCollider + SuperDirt for users of TidalCycles, Strudel an
 |-|-|
 | `docs/dev/integration.md` | Design: core plus per-front-end adapters, ports, CLI, order of work |
 | `docs/dev/superdirt-parameter-mapping.md` | Reference spec: SuperDirt event pipeline, fields, node/bus layout |
+| `docs/dev/superdough-mapping.md` | Reference spec for the Strudel path: superdough's sources, envelope, gain, filters, orbit |
+| `docs/dev/strudel-headless.md` | Scope: Strudel code in-process via a QuickJS wrapper in nanosynth |
 | `docs/dev/spike-results.md` | What the spike proved, measured timings, findings |
 | `docs/dev/strudel-usage.md` | Which superdough sources and controls Strudel code uses; scope for M5 |
 | nanosynth `docs/dev/roadmap.md` | Requirements, milestones and status across both packages |
@@ -29,6 +31,8 @@ nanodirt replaces SuperCollider + SuperDirt for users of TidalCycles, Strudel an
 
 - vortex: nanodirt ships a replacement `vortex.boot` module and registers it before starting vortex's own GUI or REPL.
 
+- Semantics per front end (2026-10-27): Strudel events (WebSocket, or UDP with `--strudel`) follow superdough for all sources and controls; Tidal and vortex follow SuperDirt. Spec: `docs/dev/superdough-mapping.md`.
+
 ## Done
 
 | Milestone | What | Checked by |
@@ -38,6 +42,7 @@ nanodirt replaces SuperCollider + SuperDirt for users of TidalCycles, Strudel an
 | M2 | WebSocket adapter, Strudel field rules (`sustain`, `clip`, `duration`, `channels`), default sample maps and bank aliases, background download, pitched banks, ffmpeg transcoding of MP3 | `tests/test_dirt.py` (unit); live smoke test downloading `tr909` from the CDN |
 | M3 | `nanodirt.vortex.boot`, `nanodirt vortex [--cli]` | `tests/test_vortex.py`: headless playback through `vortex_dsl()`; vortex.stream and pyliblo3 not imported; public-name check against vortex's own `boot.py` |
 | M4 | 25 core and global SynthDefs, 43 instruments, 20 extra effect modules | `tests/test_synthdef_parity.py`, `test_instrument_parity.py`, `test_effect_parity.py`: rendered against sclang's compiled SynthDefs (`tests/fixtures/superdirt_defs/`), 1e-4 tolerance, or by level for graphs with random draws |
+| M5 (part) | superdough synth sources on the Strudel path (`dough.py`, `Dirt.play_strudel`); superdough oracle | `tests/test_dough.py`: rules, offline level; with `NANODIRT_TEST_SUPERDOUGH=1`, rendered against superdough |
 
 Behaviour found by the oracle and reproduced:
 
@@ -56,6 +61,7 @@ Pending work is tracked in nanosynth's `TODO.md`, section "Dirt-protocol backend
 ```bash
 make test                                  # unit, SynthDef parity (NRT), adapters
 NANODIRT_TEST_ORACLE=1 make test           # plus event and audio parity against SuperDirt
+NANODIRT_TEST_SUPERDOUGH=1 uv run --with playwright pytest   # plus Strudel-path parity against superdough
 uv run --with "git+https://codeberg.org/uzu/vortex" pytest tests/test_vortex.py
 ```
 

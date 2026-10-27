@@ -192,7 +192,7 @@ class TestStrudel:
         from nanodirt.strudel import normalize
 
         e = normalize({"s": "bd", "sustain": 0.5, "clip": 0.8, "duration": 1, "channels": "[1,2]"})
-        assert e == {"s": "bd", "strudelSustain": 0.5, "legato": 0.8}
+        assert e == {"s": "bd", "strudelSustain": 0.5, "legato": 1.0}
 
     def test_note_names(self) -> None:
         from nanodirt.strudel import note_to_midi
@@ -258,7 +258,7 @@ class TestStrudel:
             with connect(f"ws://localhost:{ws.port}") as c:
                 frame = {
                     "address": "/dirt/play",
-                    "args": ["s", "bd", "n", 1, "clip", 0.5, "delta", 0.5],
+                    "args": ["s", "bd", "n", 1, "clip", 0.5, "delta", 0.2],
                     "timestamp": (time.time() + 0.2) * 1000,
                 }
                 c.send(_json.dumps(frame))
@@ -266,4 +266,25 @@ class TestStrudel:
         finally:
             ws.stop()
         args = s_new(bundles(dirt)[0], "dirt_gate2")
-        assert args["sustain"] == pytest.approx(0.25 - 0.001)  # delta * legato from clip
+        assert args["sustain"] == pytest.approx(0.2 - 0.001)  # delta already includes clip
+
+    def test_superdough_source(self, dirt: Dirt) -> None:
+        dirt.play_strudel(
+            {"s": "sawtooth", "note": 57, "delta": 0.5, "orbit": 1}, time.time() + 0.2
+        )
+        (bundle,) = bundles(dirt)
+        orbit = dirt.orbits[1]
+        monitor = orbit.global_effects[-1].node_id
+        assert ["/n_run", monitor, 1] in bundle  # the sleeping monitor is resumed
+        m = bundle[-1]
+        assert m[:5] == ["/s_new", "dough_sawtooth2", -1, 0, orbit.group]
+        args = dict(zip(m[5::2], m[6::2]))
+        assert args["out"] == orbit.dry_bus
+        assert args["freq"] == pytest.approx(220.0)
+
+    def test_strudel_sample_and_tidal_synth_names(self, dirt: Dirt) -> None:
+        dirt.play_strudel({"s": "bd", "delta": 0.2}, time.time() + 0.2)
+        s_new(bundles(dirt)[0], "dirt_gate2")  # SuperDirt path, as before
+        dirt.server.sent.clear()
+        dirt.play({"s": "sawtooth"}, time.time() + 0.2)  # Tidal: not a superdough source
+        assert not [m for m in bundles(dirt)[0] if str(m[1]).startswith("dough_")]

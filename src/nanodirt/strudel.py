@@ -44,8 +44,9 @@ def normalize(event: dict[str, Any]) -> dict[str, Any]:
     e = dict(event)
     if "sustain" in e:  # superdough: ADSR sustain level, not a duration
         e["strudelSustain"] = e.pop("sustain")
-    if "clip" in e and "legato" not in e:
-        e["legato"] = e.pop("clip")
+    if "clip" in e:  # delta already includes clip; superdough then cuts at the hap end
+        del e["clip"]
+        e.setdefault("legato", 1.0)
     e.pop("duration", None)
     e.pop("channels", None)
     return e

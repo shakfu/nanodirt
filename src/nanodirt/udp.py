@@ -11,7 +11,7 @@ import shutil
 import socket
 import subprocess
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any
 
 from nanosynth.exceptions import OscError
@@ -61,12 +61,12 @@ class UdpAdapter:
         dirt: Dirt,
         port: int = DEFAULT_PORT,
         host: str = "127.0.0.1",
-        normalize: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        strudel: bool = False,
     ) -> None:
         self.dirt = dirt
         self.port = port
         self.host = host
-        self.normalize = normalize
+        self.strudel = strudel  # events come from Strudel's OSC output
         self.sock: socket.socket | None = None
         self.reply_address: tuple[str, int] | None = None
         self._thread: threading.Thread | None = None
@@ -127,9 +127,10 @@ class UdpAdapter:
         if path in ("/dirt/play", "/play2"):
             self.reply_address = address
             event = pairs_to_dict(args)
-            if self.normalize is not None:
-                event = self.normalize(event)
-            self.dirt.play(event, timestamp)
+            if self.strudel:
+                self.dirt.play_strudel(event, timestamp)
+            else:
+                self.dirt.play(event, timestamp)
         elif path == "/dirt/handshake":
             self.reply(address, "/dirt/handshake/reply", *self.handshake_reply_data())
         elif path == "/dirt/hello":

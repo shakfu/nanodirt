@@ -118,8 +118,8 @@ Starting nanodirt from the editor:
 
 | Field | Strudel | SuperDirt / Tidal | nanodirt rule (WS adapter) |
 |-|-|-|-|
-| `sustain` | ADSR sustain level, 0..1 (`superdough/helpers.mjs:59-79`) | event duration in seconds (`DirtEvent.sc:110-128`) | treat as level; duration from `delta` and `clip` |
-| `clip` | main name; `legato` is its alias | Tidal sends `legato` | `clip` -> `legato` |
+| `sustain` | ADSR sustain level, 0..1 (`superdough/helpers.mjs:59-79`) | event duration in seconds (`DirtEvent.sc:110-128`) | treat as level; duration from `delta` |
+| `clip` | main name; `legato` is its alias. `delta` already includes it (`core/hap.mjs:42-44`) | Tidal sends `legato` | drop `clip`, set `legato` 1: cut at `delta`, as superdough's sampler does (`sampler.mjs:338-342`) |
 | `bank` | superdough plays `<bank>_<s>` (`superdough.mjs:560`) | ignored | `s = bank + "_" + s` |
 | `duration` | main name; `dur` is its alias | unused | ignore |
 | `midinote` | computed with octave 3 | `note ? n + octave*12`, octave 5 | an explicit `midinote` wins, as in SuperDirt |

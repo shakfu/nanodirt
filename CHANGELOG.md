@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- superdough's synth sources for Strudel events: `sine`, `triangle`, `square`, `sawtooth` (and `sin`, `tri`, `sqr`, `saw`), and `white`, `pink`, `brown`, `crackle` noise. They played nothing before. Envelope, gain and pitch follow superdough (`docs/dev/superdough-mapping.md`). Effects, `pan` and `n` (partials) do not apply to them yet. Tidal's `s "sine"` still plays the sample bank.
+
+- A superdough oracle for the Strudel path: `scripts/superdough_oracle/` renders events through Strudel's own superdough in headless Chromium. Opt-in tests: `NANODIRT_TEST_SUPERDOUGH=1`.
+
+### Fixed
+
+- Strudel's `clip` was applied twice: Strudel's `delta` already includes it, and nanodirt also used `clip` as `legato`, so `clip(0.5)` played a quarter of the slot. A `clip` now cuts the sound at `delta`, as superdough does.
+
 ## [0.1.0]
 
 ### Added

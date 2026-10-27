@@ -14,7 +14,6 @@ import threading
 from typing import Any
 
 from .dirt import Dirt
-from .strudel import normalize
 from .udp import bind_error, pairs_to_dict
 
 logger = logging.getLogger(__name__)
@@ -39,8 +38,8 @@ class WebSocketAdapter:
         if data.get("address") != "/dirt/play":
             return
         timestamp = data.get("timestamp")
-        event = normalize(pairs_to_dict(list(data.get("args", []))))
-        self.dirt.play(event, timestamp / 1000.0 if timestamp else None)
+        event = pairs_to_dict(list(data.get("args", [])))
+        self.dirt.play_strudel(event, timestamp / 1000.0 if timestamp else None)
 
     async def _handler(self, ws: Any) -> None:
         self.connections += 1

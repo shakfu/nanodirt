@@ -308,7 +308,10 @@ class Dirt:
         from .synthdefs import core_synthdefs
 
         if not self.synthdefs:
+            from .dough import synthdefs as dough_synthdefs
+
             self.add_synthdefs(core_synthdefs(self.num_channels))
+            self.add_synthdefs(dough_synthdefs(self.num_channels))
             self.add_synthdefs(default_instruments(self.num_channels))
             self.add_synthdefs(effect_synthdefs(self.num_channels))
         for d in self.synthdefs.values():
@@ -368,8 +371,8 @@ class Dirt:
 
     # -- events
 
-    def play(self, params: Mapping[str, Any], timestamp: float | None = None) -> bool:
-        """Play one event at *timestamp* (Unix seconds). Returns False if dropped."""
+    def _schedule(self, timestamp: float | None) -> float | None:
+        """The time to play an event stamped *timestamp*, or None if it is too late."""
         now = time.time()
         if timestamp is None:
             timestamp = now
@@ -379,9 +382,37 @@ class Dirt:
             timestamp = now + 0.2
         if self.late_threshold is not None and latency < -self.late_threshold:
             self.late_dropped += 1
+            return None
+        return timestamp
+
+    def play_strudel(self, params: Mapping[str, Any], timestamp: float | None = None) -> bool:
+        """Play a Strudel event: superdough's synth sources here, the rest as SuperDirt does."""
+        from .dough import voice
+        from .strudel import normalize
+
+        found = voice(params, self.num_channels)
+        if found is None:
+            return self.play(normalize(dict(params)), timestamp)
+        when = self._schedule(timestamp)
+        if when is None or not self.orbits:
             return False
-        if not self.orbits:
+        orbit = self.orbits[int(params.get("orbit", 0) or 0) % len(self.orbits)]
+        name, controls = found
+        # Resume the orbit's monitor, which sleeps when idle; the other global effects
+        # (delay, reverb) keep their state: superdough voices do not send to them yet.
+        e = Event(dict(params), orbit.defaults)
+        msgs = [m for fx in orbit.global_effects if fx.always_run for m in fx.set(e)]
+        pairs = [x for kv in {"out": orbit.dry_bus, **controls}.items() for x in kv]
+        msgs.append(OscMessage("/s_new", name, -1, 0, orbit.group, *pairs))
+        self.server.send_bundle(msgs, when)
+        return True
+
+    def play(self, params: Mapping[str, Any], timestamp: float | None = None) -> bool:
+        """Play one event at *timestamp* (Unix seconds). Returns False if dropped."""
+        when = self._schedule(timestamp)
+        if when is None or not self.orbits:
             return False
+        timestamp = when
         received = dict(params)
         index = int(received.get("orbit", 0) or 0)
         orbit = self.orbits[index % len(self.orbits)]

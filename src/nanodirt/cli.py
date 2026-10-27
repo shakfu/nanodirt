@@ -163,10 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     adapters: list[Any] = []
     try:
         udp = UdpAdapter(dirt, port=args.port)
-        if args.strudel:
-            from .strudel import normalize
-
-            udp.normalize = normalize
+        udp.strudel = args.strudel
         udp.start()
         adapters.append(udp)
         print(f"nanodirt: /dirt/play on UDP {args.port}")
