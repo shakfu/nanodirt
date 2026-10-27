@@ -13,6 +13,7 @@ nanodirt replaces SuperCollider + SuperDirt for users of TidalCycles, Strudel an
 | `docs/dev/integration.md` | Design: core plus per-front-end adapters, ports, CLI, order of work |
 | `docs/dev/superdirt-parameter-mapping.md` | Reference spec: SuperDirt event pipeline, fields, node/bus layout |
 | `docs/dev/spike-results.md` | What the spike proved, measured timings, findings |
+| `docs/dev/strudel-usage.md` | Which superdough sources and controls Strudel code uses; scope for M5 |
 | nanosynth `docs/dev/roadmap.md` | Requirements, milestones and status across both packages |
 | nanosynth `docs/dev/livecoding.md` | Options considered and why nanodirt |
 
