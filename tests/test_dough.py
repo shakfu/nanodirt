@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import math
 import os
+import random
 import shutil
 import struct
 import sys
 import tempfile
+import wave
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -21,7 +23,7 @@ from nanosynth.score import Score
 from nanosynth.scsynth import Options
 from parity import write_test_wav
 
-from nanodirt import dough
+from nanodirt import dough, dough_orbit
 from nanodirt.library import Sample, read_header
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "superdough_oracle"))
@@ -29,7 +31,8 @@ import superdough_oracle  # noqa: E402
 
 RATE = 44100
 NUM_CHANNELS = 2
-DEFS = {d.effective_name: d for d in dough.synthdefs(NUM_CHANNELS)}
+DEFS = {d.effective_name: d for d in [*dough.synthdefs(NUM_CHANNELS), *dough_orbit.synthdefs()]}
+DELAY_BUS, ROOM_BUS = 66, 68
 SYNTH_BUS = 64  # private in NRT
 Frames = list[tuple[float, float]]
 
@@ -45,6 +48,12 @@ def banks(tmp_path_factory: pytest.TempPathFactory) -> dict[str, list[Path]]:
             path = root / f"{name}{i}.wav"
             write_test_wav(path, channels, seconds=0.25 + 0.1 * i, rate=RATE)
             out[name].append(path)
+    # one full-scale sample, a broadband source, after the 2 ms attack and decay
+    click = root / "click0.wav"
+    with wave.open(str(click), "wb") as w:
+        w.setnchannels(1), w.setsampwidth(2), w.setframerate(RATE)
+        w.writeframes(bytes(2 * 200) + struct.pack("<h", 32767) + bytes(2 * 199))
+    out["click"] = [click, click]
     return out
 
 
@@ -72,7 +81,26 @@ def nrt(
     source = {"out": SYNTH_BUS, **v.controls}
     if v.sample is not None:
         source["buf"] = v.sample.buffer
-    gate = {"in": SYNTH_BUS, "out": 0, **v.gate}
+    gate = {"in": SYNTH_BUS, "out": 0, **v.gate, "delayBus": DELAY_BUS, "roomBus": ROOM_BUS}
+    after: list[OscMessage] = []  # the orbit's effects, added once the voice's group exists
+    delay = dough_orbit.delay_settings(event, RATE)
+    if delay is not None:  # the orbit's effects, after the voice's group
+        send, time_, feedback = delay
+        gate["delaySend"] = send
+        after.append(OscMessage(
+            "/s_new", "dough_delay", 2000, 3, 900, "in", DELAY_BUS, "out", 0,
+            *dough_orbit.delay_controls(time_, feedback, RATE),
+        ))  # fmt: skip
+    reverb = dough_orbit.reverb_settings(event)
+    if reverb is not None:
+        gate["roomSend"] = reverb[0]
+        ir = Path(tempfile.mkdtemp()) / "ir.wav"
+        frames = dough_orbit.prepare_ir(reverb[1], RATE, 64, random.Random(1), ir)
+        load, prepare = dough_orbit.ir_messages(ir, frames, (10, 11), (12, 13))
+        after += load + prepare
+        after.append(OscMessage(
+            "/s_new", "dough_reverb", 2001, 3, 900, "in", ROOM_BUS, "out", 0, "left", 12, "right", 13,
+        ))  # fmt: skip
     flat = lambda d: [x for kv in d.items() for x in kv]  # noqa: E731
     score.add(0.0, OscMessage("/g_new", 900, 0, 0))
     score.add(0.0, OscMessage("/s_new", v.source, 1000, 0, 900, *flat(source)))
@@ -92,6 +120,8 @@ def nrt(
         0.0,
         OscMessage("/s_new", f"dough_gate{v.channels}_{NUM_CHANNELS}", 1001, 1, 900, *flat(gate)),
     )
+    for m in after:
+        score.add(0.0, m)
     score.add(seconds, OscMessage("/c_set", 0, 0))
     path = Path(tempfile.mkdtemp()) / "voice.wav"
     score.render(
@@ -219,7 +249,9 @@ def sd(banks: dict[str, list[Path]]) -> Iterator[Any]:
 
 
 def reference(sd: Any, value: dict[str, Any], duration: float, seconds: float) -> Frames:
-    return sd.render([{"value": value, "t": 0.0, "duration": duration}], seconds, RATE)  # type: ignore[no-any-return]
+    # superdough takes cps as an argument; Strudel's OSC output puts it in the event.
+    event = {"value": value, "t": 0.0, "duration": duration, "cps": value.get("cps", 0.5)}
+    return sd.render([event], seconds, RATE)  # type: ignore[no-any-return]
 
 
 ENVELOPES: list[dict[str, Any]] = [
@@ -332,3 +364,74 @@ def test_filter_matches_sample_by_sample(
     swept = any(k.endswith(("env", "attack", "decay", "sustain", "release")) for k in extra)
     # A moving cutoff: 32-bit coefficients near the unit circle (Chrome's are 64-bit).
     assert matches(ref, got, 0.005 if swept else 0.003, skip=(end, len(ref)))
+
+
+class TestOrbitRules:
+    def test_delay_settings(self) -> None:
+        assert dough_orbit.delay_settings({}, 48000) is None
+        assert dough_orbit.delay_settings({"delay": 0.5, "cps": 0.5}, 48000) == (0.5, 0.375, 0.5)
+        assert dough_orbit.delay_settings({"delay": 0.5, "delayfeedback": 0}, 48000) is None
+        send, time_, feedback = dough_orbit.delay_settings(  # type: ignore[misc]
+            {"delay": 1, "delaytime": 3, "delayfeedback": 2}, 48000
+        )
+        assert (time_, feedback) == (1.0, 0.98)  # DelayNode's maximum; clamped feedback
+        assert (
+            dough_orbit.delay_settings({"delay": 1, "delaytime": 0.0001}, 48000)[1] == 128 / 48000
+        )  # type: ignore[index]
+
+    def test_comb_coefficient(self) -> None:
+        assert 0.001 ** (0.2 / dough_orbit.comb_decay(0.2, 0.6)) == pytest.approx(0.6)
+
+    def test_reverb_ir(self) -> None:
+        ir = dough_orbit.reverb_ir(0.5, 0.1, 0, 0, 8000, random.Random(0))  # no lowpass
+        assert len(ir) == 2 and len(ir[0]) == 6000  # 1.5 * roomsize
+        assert ir[0][0] == 0.0 and ir[0] != ir[1]  # faded in; independent channels
+        late = max(abs(x) for x in ir[0][3990:4010])
+        assert late < 0.0012  # -60 dB at roomsize
+        scale = dough_orbit.normalization_scale(ir, 8000)
+        power = math.sqrt(sum(x * x for ch in ir for x in ch) / 12000)
+        assert scale == pytest.approx(0.00125 / power * 44100 / 8000)
+
+
+@oracle
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"delay": 0.5, "delaytime": 0.1, "delayfeedback": 0.6},
+        {"delay": 0.8, "cps": 2.0, "pan": 0.2},
+    ],
+    ids=["explicit", "delaysync"],
+)
+def test_delay_matches_sample_by_sample(sd: Any, extra: dict[str, Any]) -> None:
+    value = {"s": "sine", "note": 69, **extra}
+    ref = reference(sd, value, 0.05, 1.0)
+    got = nrt({**value, "delta": 0.05}, 1.0)
+    assert matches(ref, got)
+
+
+def energy_decay(x: Frames, start: float) -> tuple[float, list[float]]:
+    """Tail energy after *start*, and its Schroeder decay curve in dB every 50 ms."""
+    e = [left * left + right * right for left, right in x[int(start * RATE) :]]
+    total = remaining = sum(e)
+    curve = []
+    for k, v in enumerate(e):
+        if k % (RATE // 20) == 0:
+            curve.append(10 * math.log10(max(remaining, 1e-30) / total))
+        remaining -= v
+    return total, curve
+
+
+@oracle
+@pytest.mark.parametrize("size", [0.5, 1.0, 2.0])
+def test_reverb_energy_and_decay(sd: Any, banks: dict[str, list[Path]], size: float) -> None:
+    # Both IRs are random, so samples cannot match: compare the tail's energy and its
+    # decay curve. A click is broadband, so the tail is the IR itself.
+    value = {"s": "click", "room": 0.6, "roomsize": size}
+    ref_total, ref_curve = energy_decay(reference(sd, value, 0.05, size * 1.6), 0.01)
+    got_total, got_curve = energy_decay(nrt({**value, "delta": 0.05}, size * 1.6, banks), 0.01)
+    assert got_total == pytest.approx(ref_total, rel=0.35)
+    n = int(size * 20)  # down to about -60 dB
+    assert max(abs(a - b) for a, b in zip(ref_curve[:n], got_curve[:n])) < 2.0, (
+        ref_curve,
+        got_curve,
+    )

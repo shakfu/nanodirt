@@ -228,13 +228,17 @@ Comparison:
 
 1. Oscillators and noise, with the envelope, gain and pitch rules above. Done 2026-10-27 (`nanodirt/dough.py`): sine matches superdough within 1e-3 sample by sample; `square` and `sawtooth` levels within 3% after scaling by 1.69; noise within 2-30% by type. Not yet: `n` (partials), `noise` mix, `vib`, `penv`, FM.
 
-2. Gain, filters (12 dB biquad, envelope), pan, `postgain`, orbit delay and reverb, for all sources on the Strudel path. Gain, `pan`, `postgain` and samples done 2026-10-27: a voice is a group (source synth, then `dough_gate`), as in SuperDirt; samples, `pan` and envelopes match superdough within 0.3% of the peak, sample by sample. Filters done 2026-10-27: Web Audio's biquad coefficients, recomputed every sample, in direct form I as Chrome's biquad; within 0.3% of the peak for fixed cutoffs and 0.5% for swept ones. Not yet: the ladder filter (`ftype` 1, plays as 12 dB), filter LFOs, orbit delay and reverb, effects; `loop` is implemented but not checked against the oracle.
+2. Gain, filters (12 dB biquad, envelope), pan, `postgain`, orbit delay and reverb, for all sources on the Strudel path. Gain, `pan`, `postgain` and samples done 2026-10-27: a voice is a group (source synth, then `dough_gate`), as in SuperDirt; samples, `pan` and envelopes match superdough within 0.3% of the peak, sample by sample. Filters done 2026-10-27: Web Audio's biquad coefficients, recomputed every sample, in direct form I as Chrome's biquad; within 0.3% of the peak for fixed cutoffs and 0.5% for swept ones. Orbit delay and reverb done 2026-10-27 (`dough_orbit.py`): the delay matches superdough sample by sample; the reverb's IRs are both random, so tests compare tail energy (within 35%) and decay curves (within 2 dB) for a click at three room sizes. Not yet: the ladder filter (`ftype` 1, plays as 12 dB), filter LFOs, `ir` (a sample as the IR), ducking, `djf`, effects; `loop` is implemented but not checked against the oracle.
 
    Findings that shaped it:
 
    - Direct form II (SuperCollider's `SOS`) and direct form I agree for fixed coefficients but diverge while the cutoff moves: 43% error in a 5 ms cutoff attack, against 0.4% in direct form I.
 
    - EnvGen spends one sample on each zero-length segment, so the envelope drops empty stages and pads after the release.
+
+   - Chrome's feedback delay adds one render quantum per pass: echoes land at `T + (T + 128 frames)(k - 1)`, measured. nanodirt's delay is `y = x[-T] + fb y[-T - 128]`.
+
+   - The reverb is `PartConv` (FFT 1024). Its latency, measured, is `fftsize/2 - 2 * block size` (384 samples at block 64); those IR frames are dropped, which superdough's fade-in makes nearly silent. The IR is normalized as Web Audio's `ConvolverNode` does. A realtime engine must finish loading the IR (`/sync`) before `PreparePartConv`, or the spectrum is all zeros.
 
    - When a sample's buffer runs out, superdough releases the voice chain in `onended`, cutting filter tails a few milliseconds later in realtime; nanodirt ends the voice at the buffer's end. In the offline oracle the tail instead stops on Chrome's own biquad tail time, so tests compare up to the buffer's end.
 

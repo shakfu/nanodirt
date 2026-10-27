@@ -163,8 +163,8 @@ def _envelope(
 
 def _gate(e: Mapping[str, Any], life: float) -> dict[str, float]:
     """``superdough()``'s voice chain after the source: gain, pan, postgain."""
-    gain, velocity, postgain, pan = (
-        _number(e.get(k)) for k in ("gain", "velocity", "postgain", "pan")
+    gain, velocity, postgain, pan, dry = (
+        _number(e.get(k)) for k in ("gain", "velocity", "postgain", "pan", "dry")
     )
     level = (DEFAULT_GAIN if gain is None else gain) * (1.0 if velocity is None else velocity)
     return {
@@ -172,6 +172,7 @@ def _gate(e: Mapping[str, Any], life: float) -> dict[str, float]:
         "pan": 0.5 if pan is None else pan,
         "panned": 0.0 if pan is None else 1.0,  # superdough adds a panner only when pan is set
         "life": life,
+        "dry": 1.0 if dry is None else dry,  # scales the direct output, not the sends
     }
 
 
@@ -444,7 +445,8 @@ def _gate_def(channels: int, num_channels: int) -> SynthDef:
     controls = {
         "in": control(0, "ir"), "out": control(0, "ir"), "level": control(DEFAULT_GAIN),
         "pan": control(0.5), "panned": control(0.0, "ir"), "life": control(1.0, "ir"),
-        "cut_gate": control(1.0),
+        "cut_gate": control(1.0), "dry": control(1.0), "delayBus": control(0, "ir"),
+        "roomBus": control(0, "ir"), "delaySend": control(0.0), "roomSend": control(0.0),
     }  # fmt: skip
     with SynthDefBuilder(**controls) as b:
         half_pi = math.pi / 2
@@ -472,7 +474,11 @@ def _gate_def(channels: int, num_channels: int) -> SynthDef:
         )
         level = b["level"] * life * cut
         stereo = [left * level, right * level]
-        OffsetOut.ar(bus=b["out"], source=stereo if num_channels > 1 else left * level)
+        direct = [x * b["dry"] for x in stereo]
+        OffsetOut.ar(bus=b["out"], source=direct if num_channels > 1 else direct[0])
+        # superdough sends to the orbit's delay and reverb from after postgain
+        OffsetOut.ar(bus=b["delayBus"], source=[x * b["delaySend"] for x in stereo])
+        OffsetOut.ar(bus=b["roomBus"], source=[x * b["roomSend"] for x in stereo])
         ReplaceOut.ar(bus=b["in"], source=[DC.ar(source=0)] * channels)  # clear for the next voice
     return b.build(name=f"dough_gate{channels}_{num_channels}")
 

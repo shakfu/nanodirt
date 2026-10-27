@@ -292,6 +292,21 @@ class TestStrudel:
         names = [m[1] for m in bundles(dirt)[0] if m[0] == "/s_new"]
         assert names == ["dough_sample2", "dough_lpf2", "dough_hpf2", "dough_gate2_2"]
 
+    def test_strudel_orbit_delay(self, dirt: Dirt) -> None:
+        dirt.play_strudel({"s": "sine", "delay": 0.5, "cps": 1.0, "delta": 0.2}, time.time() + 0.2)
+        dirt.play_strudel(
+            {"s": "sine", "delay": 0.3, "delaytime": 0.1, "delta": 0.2}, time.time() + 0.3
+        )
+        first, second = bundles(dirt)
+        fx = dirt.dough_orbits[0]
+        (create,) = [m for m in first if m[:2] == ["/s_new", "dough_delay"]]
+        assert create[2:5] == [fx.delay_node, 3, dirt.orbits[0].group]  # after the voices
+        assert dict(zip(create[5::2], create[6::2]))["delaytime"] == pytest.approx(3 / 16)
+        (update,) = [m for m in second if m[0] == "/n_set" and m[1] == fx.delay_node]
+        assert dict(zip(update[2::2], update[3::2]))["delaytime"] == pytest.approx(0.1)
+        gate = s_new(second, "dough_gate")
+        assert gate["delaySend"] == 0.3 and gate["delayBus"] == fx.delay_bus
+
     def test_strudel_sample_plays_its_slice(self, dirt: Dirt) -> None:
         dirt.play_strudel({"s": "bd", "n": 1, "delta": 0.05, "note": 48}, time.time() + 0.2)
         source = s_new(bundles(dirt)[0], "dough_sample1")

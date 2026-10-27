@@ -293,6 +293,7 @@ class Dirt:
         self.flotsam: dict[int, Flotsam] = {}
         self._flotsam_lock = threading.Lock()
         self.dough_cuts: dict[int, int] = {}  # superdough cut group -> event group
+        self.dough_orbits: dict[int, Any] = {}  # orbit index -> DoughOrbit
         self.orbits: list[Orbit] = []
         self.group = 0
         self.routing_buses: list[int] = []
@@ -314,9 +315,11 @@ class Dirt:
 
         if not self.synthdefs:
             from .dough import synthdefs as dough_synthdefs
+            from .dough_orbit import synthdefs as dough_orbit_synthdefs
 
             self.add_synthdefs(core_synthdefs(self.num_channels))
             self.add_synthdefs(dough_synthdefs(self.num_channels))
+            self.add_synthdefs(dough_orbit_synthdefs())
             self.add_synthdefs(default_instruments(self.num_channels))
             self.add_synthdefs(effect_synthdefs(self.num_channels))
         for d in self.synthdefs.values():
@@ -416,6 +419,7 @@ class Dirt:
                 self.dough_cuts[v.cut] = group
             if previous is not None:
                 msgs.append(OscMessage("/n_set", previous, "cut_gate", 0))
+        msgs += self._dough_orbit_messages(orbit, params, v)
         source = {"out": orbit.synth_bus, **v.controls}
         if v.sample is not None:
             source["buf"] = v.sample.buffer or 0
@@ -445,6 +449,106 @@ class Dirt:
         ]
         self.server.send_bundle(msgs, when + v.nudge)
         return True
+
+    def _dough_orbit_messages(self, orbit: Orbit, e: Mapping[str, Any], v: Any) -> list[OscMessage]:
+        """Point the voice at the orbit's delay and reverb, creating them on first use."""
+        from .dough_orbit import DoughOrbit, delay_controls, delay_settings, reverb_settings
+
+        fx = self.dough_orbits.get(orbit.index)
+        if fx is None:
+            fx = DoughOrbit(int(self.server.audio_bus(2)), int(self.server.audio_bus(2)))
+            self.dough_orbits[orbit.index] = fx
+        v.gate |= {"delayBus": fx.delay_bus, "roomBus": fx.room_bus}
+        msgs: list[OscMessage] = []
+        delay = delay_settings(e, self.sample_rate)
+        if delay is not None:
+            send, time_, feedback = delay
+            v.gate["delaySend"] = send
+            args = delay_controls(time_, feedback, self.sample_rate)
+            if fx.delay_node is None:
+                fx.delay_node = self.server.next_node_id()
+                msgs.append(
+                    OscMessage(
+                        "/s_new",
+                        "dough_delay",
+                        fx.delay_node,
+                        3,
+                        orbit.group,
+                        "in",
+                        fx.delay_bus,
+                        "out",
+                        orbit.dry_bus,
+                        *args,
+                    )  # fmt: skip
+                )
+            else:
+                msgs.append(OscMessage("/n_set", fx.delay_node, *args))
+        reverb = reverb_settings(e)
+        if reverb is not None:
+            v.gate["roomSend"] = reverb[0]
+            self._update_reverb(orbit, fx, reverb[1])
+        return msgs
+
+    def _update_reverb(self, orbit: Orbit, fx: Any, given: dict[str, float]) -> None:
+        """Generate the orbit's reverb IR when first used or when a given parameter changes.
+
+        Off the calling thread: until it is ready, sends to it are silent, as in superdough.
+        """
+        from .dough_orbit import REVERB_DEFAULTS
+
+        with fx._lock:
+            target = {**REVERB_DEFAULTS, **fx.reverb_params, **given}
+            if fx.reverb_params == target or fx.reverb_pending == target:
+                return
+            first = fx.reverb_pending is None
+            fx.reverb_pending = target
+        if first:
+            threading.Thread(
+                target=self._build_reverb, args=(orbit, fx), name="nanodirt-reverb", daemon=True
+            ).start()
+
+    def _build_reverb(self, orbit: Orbit, fx: Any) -> None:
+        """Generate and load IRs until the latest requested one is playing."""
+        import random
+        import tempfile
+        from pathlib import Path
+
+        from .dough_orbit import ir_messages, prepare_ir
+
+        if not hasattr(self.server, "sync"):  # a fake server in tests
+            fx.reverb_pending = None
+            return
+        block = getattr(getattr(self.server, "options", None), "block_size", 64)
+        while True:
+            with fx._lock:
+                params = fx.reverb_pending
+            if params is None:
+                return
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "ir.wav"
+                frames = prepare_ir(params, self.sample_rate, block, random.Random(), path)
+                ir = (self.server.next_buffer_id(), self.server.next_buffer_id())
+                spec = (self.server.next_buffer_id(), self.server.next_buffer_id())
+                for stage in ir_messages(path, frames, ir, spec):
+                    for m in stage:
+                        self.server.send_msg(m.address, *m.contents)
+                    self.server.sync()
+            # PartConv reads its IR when created: a new IR is a new synth, as setting
+            # ConvolverNode.buffer restarts the convolution.
+            node = self.server.next_node_id()
+            self.server.send_msg(
+                "/s_new", "dough_reverb", node, 3, orbit.group,
+                "in", fx.room_bus, "out", orbit.dry_bus, "left", spec[0], "right", spec[1],
+            )  # fmt: skip
+            if fx.reverb_node is not None:
+                self.server.send_msg("/n_free", fx.reverb_node)
+                for b in fx.reverb_buffers:
+                    self.server.send_msg("/b_free", b)
+            with fx._lock:
+                fx.reverb_node, fx.reverb_buffers, fx.reverb_params = node, [*ir, *spec], params
+                if fx.reverb_pending == params:
+                    fx.reverb_pending = None
+                    return
 
     def _find_sample(
         self, name: str, index: int, midi: float
