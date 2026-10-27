@@ -265,10 +265,10 @@ class TestStrudel:
                 time.sleep(0.2)
         finally:
             ws.stop()
-        args = s_new(bundles(dirt)[0], "dirt_gate2")
-        assert args["sustain"] == pytest.approx(0.2 - 0.001)  # delta already includes clip
+        source = s_new(bundles(dirt)[0], "dough_sample1")
+        assert source["t3"] == pytest.approx(0.2 - 0.002)  # clip: cut at delta, which includes it
 
-    def test_superdough_source(self, dirt: Dirt) -> None:
+    def test_superdough_voice_layout(self, dirt: Dirt) -> None:
         dirt.play_strudel(
             {"s": "sawtooth", "note": 57, "delta": 0.5, "orbit": 1}, time.time() + 0.2
         )
@@ -276,15 +276,30 @@ class TestStrudel:
         orbit = dirt.orbits[1]
         monitor = orbit.global_effects[-1].node_id
         assert ["/n_run", monitor, 1] in bundle  # the sleeping monitor is resumed
-        m = bundle[-1]
-        assert m[:5] == ["/s_new", "dough_sawtooth2", -1, 0, orbit.group]
-        args = dict(zip(m[5::2], m[6::2]))
-        assert args["out"] == orbit.dry_bus
-        assert args["freq"] == pytest.approx(220.0)
+        g_new, source, gate = bundle[-3:]
+        group = g_new[1]
+        assert g_new == ["/g_new", group, 1, orbit.group]
+        assert source[:5] == ["/s_new", "dough_sawtooth", -1, 0, group]
+        assert gate[:5] == ["/s_new", "dough_gate1_2", -1, 1, group]
+        src, gt = dict(zip(source[5::2], source[6::2])), dict(zip(gate[5::2], gate[6::2]))
+        assert src["out"] == gt["in"] == orbit.synth_bus and gt["out"] == orbit.dry_bus
+        assert src["freq"] == pytest.approx(220.0) and gt["level"] == pytest.approx(0.8)
 
-    def test_strudel_sample_and_tidal_synth_names(self, dirt: Dirt) -> None:
-        dirt.play_strudel({"s": "bd", "delta": 0.2}, time.time() + 0.2)
-        s_new(bundles(dirt)[0], "dirt_gate2")  # SuperDirt path, as before
+    def test_strudel_sample_plays_its_slice(self, dirt: Dirt) -> None:
+        dirt.play_strudel({"s": "bd", "n": 1, "delta": 0.05, "note": 48}, time.time() + 0.2)
+        source = s_new(bundles(dirt)[0], "dough_sample1")
+        assert source["rate"] == pytest.approx(2.0)  # note 48 is 12 semitones over 36
+        assert source["t3"] == pytest.approx(0.3 / 2 - 0.002)  # whole slice, not delta
+
+    def test_strudel_cut_group(self, dirt: Dirt) -> None:
+        dirt.play_strudel({"s": "pad", "cut": 1, "delta": 0.2}, time.time() + 0.2)
+        first = bundles(dirt)[0][-3][1]
+        dirt.play_strudel({"s": "bd", "cut": 1, "delta": 0.2}, time.time() + 0.3)
+        assert ["/n_set", first, "cut_gate", 0] in bundles(dirt)[1]
+
+    def test_strudel_superdirt_synth_and_tidal_names(self, dirt: Dirt) -> None:
+        dirt.play_strudel({"s": "superpiano", "delta": 0.2}, time.time() + 0.2)
+        s_new(bundles(dirt)[0], "dirt_gate2")  # superdough has no superpiano: SuperDirt plays it
         dirt.server.sent.clear()
         dirt.play({"s": "sawtooth"}, time.time() + 0.2)  # Tidal: not a superdough source
         assert not [m for m in bundles(dirt)[0] if str(m[1]).startswith("dough_")]

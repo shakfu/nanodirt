@@ -175,6 +175,10 @@ def default_global_effects() -> list[GlobalEffect]:
     ]
 
 
+def _flat(d: Mapping[str, Any]) -> list[Any]:
+    return [x for kv in d.items() for x in kv]
+
+
 def _pairs(args: list[Any]) -> list[Any]:
     """Name/value pairs as sclang encodes them: an absent (nil) value is sent as 0."""
     out: list[Any] = []
@@ -288,6 +292,7 @@ class Dirt:
         self.modules: list[Module] = CORE_MODULES + EXTRA_MODULES + LAST_MODULES
         self.flotsam: dict[int, Flotsam] = {}
         self._flotsam_lock = threading.Lock()
+        self.dough_cuts: dict[int, int] = {}  # superdough cut group -> event group
         self.orbits: list[Orbit] = []
         self.group = 0
         self.routing_buses: list[int] = []
@@ -359,6 +364,9 @@ class Dirt:
         if event.action == "end":
             with self._flotsam_lock:
                 self.flotsam.pop(event.node_id, None)
+                for cut, group in list(self.dough_cuts.items()):
+                    if group == event.node_id:
+                        del self.dough_cuts[cut]
 
     def add_samples(self, paths: Iterable[str]) -> None:
         self.library.add_folders(paths)
@@ -386,26 +394,61 @@ class Dirt:
         return timestamp
 
     def play_strudel(self, params: Mapping[str, Any], timestamp: float | None = None) -> bool:
-        """Play a Strudel event: superdough's synth sources here, the rest as SuperDirt does."""
-        from .dough import voice
+        """Play a Strudel event as superdough does; sounds it lacks (``super*``) as SuperDirt."""
+        from .dough import SILENT, voice
         from .strudel import normalize
 
-        found = voice(params, self.num_channels)
-        if found is None:
+        v = voice(params, self.num_channels, self._find_sample)
+        if v is None:
             return self.play(normalize(dict(params)), timestamp)
         when = self._schedule(timestamp)
-        if when is None or not self.orbits:
+        if when is None or not self.orbits or v is SILENT:
             return False
         orbit = self.orbits[int(params.get("orbit", 0) or 0) % len(self.orbits)]
-        name, controls = found
         # Resume the orbit's monitor, which sleeps when idle; the other global effects
         # (delay, reverb) keep their state: superdough voices do not send to them yet.
         e = Event(dict(params), orbit.defaults)
         msgs = [m for fx in orbit.global_effects if fx.always_run for m in fx.set(e)]
-        pairs = [x for kv in {"out": orbit.dry_bus, **controls}.items() for x in kv]
-        msgs.append(OscMessage("/s_new", name, -1, 0, orbit.group, *pairs))
-        self.server.send_bundle(msgs, when)
+        group = self.server.next_node_id()
+        if v.cut is not None:  # superdough's cut groups span all orbits
+            with self._flotsam_lock:
+                previous = self.dough_cuts.get(v.cut)
+                self.dough_cuts[v.cut] = group
+            if previous is not None:
+                msgs.append(OscMessage("/n_set", previous, "cut_gate", 0))
+        source = {"out": orbit.synth_bus, **v.controls}
+        if v.sample is not None:
+            source["buf"] = v.sample.buffer or 0
+        gate = {"in": orbit.synth_bus, "out": orbit.dry_bus, **v.gate}
+        msgs += [
+            OscMessage("/g_new", group, 1, orbit.group),
+            OscMessage("/s_new", v.source, -1, 0, group, *_pairs(_flat(source))),
+            OscMessage(
+                "/s_new",
+                f"dough_gate{v.channels}_{self.num_channels}",
+                -1,
+                1,
+                group,
+                *_pairs(_flat(gate)),
+            ),
+        ]
+        self.server.send_bundle(msgs, when + v.nudge)
         return True
+
+    def _find_sample(
+        self, name: str, index: int, midi: float
+    ) -> tuple[Sample, float | None] | None:
+        """A Strudel sound: local banks first, then the Strudel sample maps."""
+        sample = self.library.get(name, index)
+        if sample is not None:
+            return sample, None
+        if self.remote is None:
+            return None
+        found = self.remote.get(name, index, midi)
+        if found is None:
+            return None
+        self.library._ensure_loaded(found[0])
+        return found if found[0].header is not None else None
 
     def play(self, params: Mapping[str, Any], timestamp: float | None = None) -> bool:
         """Play one event at *timestamp* (Unix seconds). Returns False if dropped."""

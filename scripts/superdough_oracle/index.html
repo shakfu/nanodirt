@@ -41,5 +41,7 @@ window.render = async (events, seconds, sampleRate, seed = 1) => {
   for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return btoa(s);
 };
+// Register files served next to this page as a sample bank: {name: [path, ...]}.
+window.addSamples = (map) => sd.samples(map, location.origin + '/');
 window.ready = true;
 </script>

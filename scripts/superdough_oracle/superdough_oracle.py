@@ -77,6 +77,8 @@ class Superdough:
     def __enter__(self) -> Superdough:
         from playwright.sync_api import sync_playwright
 
+        shutil.copy(HERE / "index.html", WWW / "index.html")  # keep the page in step with the repo
+
         handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(WWW))
         handler.log_message = lambda *a: None  # type: ignore[attr-defined]
         self._httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -88,6 +90,10 @@ class Superdough:
         self._page.goto(f"http://127.0.0.1:{self._httpd.server_port}/index.html")
         self._page.wait_for_function("window.ready === true")
         return self
+
+    def add_samples(self, banks: dict[str, list[str]]) -> None:
+        """Register files under ``WWW`` as superdough sample banks, by path relative to it."""
+        self._page.evaluate("(m) => window.addSamples(m)", banks)
 
     def render(
         self, events: list[Event], seconds: float, rate: int = 48000, seed: int = 1

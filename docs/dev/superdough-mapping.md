@@ -228,7 +228,7 @@ Comparison:
 
 1. Oscillators and noise, with the envelope, gain and pitch rules above. Done 2026-10-27 (`nanodirt/dough.py`): sine matches superdough within 1e-3 sample by sample; `square` and `sawtooth` levels within 3% after scaling by 1.69; noise within 2-30% by type. Not yet: `n` (partials), `noise` mix, `vib`, `penv`, FM.
 
-2. Gain, filters (12 dB biquad, envelope), pan, `postgain`, orbit delay and reverb, for all sources on the Strudel path.
+2. Gain, filters (12 dB biquad, envelope), pan, `postgain`, orbit delay and reverb, for all sources on the Strudel path. Gain, `pan`, `postgain` and samples done 2026-10-27: a voice is a group (source synth, then `dough_gate`), as in SuperDirt; samples, `pan` and envelopes match superdough within 0.3% of the peak, sample by sample. Not yet: filters, orbit delay and reverb, effects; `loop` is implemented but not checked against the oracle.
 
 3. Controls by usage: filter envelope, FM, ducking, pitch envelope, `vib`, `compressor`, `supersaw` `unison`.
 

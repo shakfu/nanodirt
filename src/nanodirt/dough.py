@@ -1,30 +1,46 @@
-"""superdough's synth sources for Strudel events (docs/dev/superdough-mapping.md).
+"""superdough's voice for Strudel events (docs/dev/superdough-mapping.md).
 
-Oscillators and noise, with superdough's envelope, gain and pitch rules. The
+A voice is a group in the orbit, as in SuperDirt: a source synth writes the
+enveloped source to the orbit's synth bus; ``dough_gate`` applies gain, pan
+and postgain, adds the result to the dry bus and clears the synth bus. The
 envelope's breakpoints depend on the event's duration, so they are computed
 here per event and sent as controls.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import math
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from nanosynth.envelopes import Envelope, EnvGen
 from nanosynth.synthdef import SynthDef, SynthDefBuilder, control
 from nanosynth.ugens import (
+    DC,
+    BufRateScale,
+    BufRd,
+    BufSampleRate,
     Delay1,
     Dust2,
+    Impulse,
+    In,
     LFTri,
+    OffsetOut,
     OnePole,
     Out,
+    Phasor,
     Pulse,
+    ReplaceOut,
     SampleRate,
     Saw,
+    Select,
     SinOsc,
+    Sweep,
     WhiteNoise,
 )
 
+from .library import Sample
 from .strudel import note_to_midi
 
 OSCILLATORS = {
@@ -34,11 +50,29 @@ OSCILLATORS = {
 NOISES = {"white", "pink", "brown", "crackle"}
 SOURCE_LEVEL = 0.3  # synth.mjs: "turn down"
 SOURCE_ENVELOPE = (0.001, 0.05, 0.6, 0.01)  # synth.mjs defaults for oscillators and noise
+SAMPLE_ENVELOPE = (0.001, 0.001, 1.0, 0.01)  # getADSRValues with no defaults
 DEFAULT_GAIN = 0.8
 CRACKLE_DENSITY = 0.02  # getNoiseOscillator's default; synth.mjs reads value.density directly
 # Web Audio normalizes band-limited waves to peak 1, Gibbs overshoot (~1.18) included;
 # Saw and Pulse peak at 0.5. Measured RMS ratio 1.68-1.69 (tests/test_dough.py).
 WAVE_LEVEL = {"triangle": 1.0, "square": 1.69, "sawtooth": 1.69}
+
+# (name, index, midi) -> (sample, root note of a pitched bank or None)
+FindSample = Callable[[str, int, float], "tuple[Sample, float | None] | None"]
+
+
+@dataclass
+class Voice:
+    source: str  # SynthDef name
+    controls: dict[str, float]  # source controls; the player adds out and buf
+    channels: int  # channels the source writes: 1 or 2
+    gate: dict[str, float]
+    sample: Sample | None = None
+    cut: int | None = None
+    nudge: float = 0.0
+
+
+SILENT = Voice("", {}, 1, {})  # a superdough source that plays nothing (speed 0)
 
 
 def adsr_values(
@@ -60,10 +94,12 @@ def adsr_values(
 def envelope_points(
     adsr: tuple[float, float, float, float], duration: float
 ) -> tuple[list[float], list[float]]:
-    """``getParamADSR`` from 0 to 1, linear: levels and times of 4 segments.
+    """``getParamADSR`` from 0 to 1, linear: target levels and times of 4 segments.
 
-    The fourth segment is the release, to 0. A note shorter than attack or
-    attack + decay stops its ramp where the full envelope would be at its end.
+    A note shorter than attack or attack + decay stops its ramp where the full
+    envelope would be at its end. Empty stages are dropped and the release is
+    followed by padding at level 0: EnvGen spends one sample on each
+    zero-length segment, which would delay the release.
     """
     attack, decay, sustain, release = adsr
 
@@ -73,12 +109,26 @@ def envelope_points(
         return 1.0 + (time - attack) * (sustain - 1.0) / decay
 
     if attack > duration:
-        v = at(duration)
-        return [v, v, v], [duration, 0.0, 0.0, release]
-    if attack + decay > duration:
-        v = at(duration)
-        return [1.0, v, v], [attack, duration - attack, 0.0, release]
-    return [1.0, sustain, sustain], [attack, decay, duration - attack - decay, release]
+        stages = [(at(duration), duration)]
+    elif attack + decay > duration:
+        stages = [(1.0, attack), (at(duration), duration - attack)]
+    else:
+        stages = [(1.0, attack), (sustain, decay), (sustain, duration - attack - decay)]
+    stages = [st for st in stages if st[1] > 0] + [(0.0, release)]
+    stages += [(0.0, 0.0)] * (4 - len(stages))
+    return [lv for lv, _ in stages], [t for _, t in stages]
+
+
+def midi(e: Mapping[str, Any], default: float = 36) -> float:
+    """``valueToMidi``: from ``freq``, else ``note`` (number or name), else *default*."""
+    freq, note = e.get("freq"), e.get("note")
+    if isinstance(freq, (int, float)) and not isinstance(freq, bool):
+        return 69 + 12 * math.log2(freq / 440)
+    if isinstance(note, str):
+        return float(note_to_midi(note))
+    if isinstance(note, (int, float)) and not isinstance(note, bool):
+        return float(note)
+    return default
 
 
 def frequency(e: Mapping[str, Any]) -> float:
@@ -96,28 +146,117 @@ def _number(x: Any) -> float | None:
     return float(x) if isinstance(x, (int, float)) and not isinstance(x, bool) else None
 
 
-def voice(e: Mapping[str, Any], num_channels: int) -> tuple[str, dict[str, float]] | None:
-    """The SynthDef and controls for a Strudel event with a superdough source, else None."""
-    s = e.get("s")
-    if not isinstance(s, str) or e.get("bank"):
-        return None
-    name = OSCILLATORS.get(s.lower(), s.lower())
-    if name not in OSCILLATORS.values() and name not in NOISES:
-        return None
+def _envelope(
+    e: Mapping[str, Any], defaults: tuple[float, float, float, float], duration: float
+) -> tuple[dict[str, float], float]:
     adsr = adsr_values(
-        tuple(_number(e.get(k)) for k in ("attack", "decay", "sustain", "release")),
-        SOURCE_ENVELOPE,
+        tuple(_number(e.get(k)) for k in ("attack", "decay", "sustain", "release")), defaults
     )
-    levels, times = envelope_points(adsr, float(e.get("delta") or 0.0))
-    gain, velocity, postgain = (_number(e.get(k)) for k in ("gain", "velocity", "postgain"))
-    amp = SOURCE_LEVEL * (DEFAULT_GAIN if gain is None else gain)
-    amp *= (1.0 if velocity is None else velocity) * (1.0 if postgain is None else postgain)
-    controls = {"amp": amp, "freq": frequency(e)}
-    controls |= {f"l{i + 1}": v for i, v in enumerate(levels)}
+    levels, times = envelope_points(adsr, duration)
+    controls = {f"l{i + 1}": v for i, v in enumerate(levels)}
     controls |= {f"t{i + 1}": v for i, v in enumerate(times)}
-    if name == "crackle":
-        controls["density"] = _number(e.get("density")) or CRACKLE_DENSITY
-    return f"dough_{name}{num_channels}", controls
+    return controls, duration + adsr[3] + 0.01  # the source stops at end + release + 0.01
+
+
+def _gate(e: Mapping[str, Any], life: float) -> dict[str, float]:
+    """``superdough()``'s voice chain after the source: gain, pan, postgain."""
+    gain, velocity, postgain, pan = (
+        _number(e.get(k)) for k in ("gain", "velocity", "postgain", "pan")
+    )
+    level = (DEFAULT_GAIN if gain is None else gain) * (1.0 if velocity is None else velocity)
+    return {
+        "level": level * (1.0 if postgain is None else postgain),
+        "pan": 0.5 if pan is None else pan,
+        "panned": 0.0 if pan is None else 1.0,  # superdough adds a panner only when pan is set
+        "life": life,
+    }
+
+
+def voice(
+    e: Mapping[str, Any], num_channels: int, find_sample: FindSample | None = None
+) -> Voice | None:
+    """superdough's voice for a Strudel event, or None if superdough has no such sound."""
+    s = e.get("s")
+    if not isinstance(s, str):
+        return None
+    bank = e.get("bank")
+    name = OSCILLATORS.get(s.lower(), s.lower()) if not bank else f"{bank}_{s}"
+    duration = float(e.get("delta") or 0.0)
+    if name in OSCILLATORS.values() or name in NOISES:
+        env, life = _envelope(e, SOURCE_ENVELOPE, duration)
+        controls = {"amp": SOURCE_LEVEL, "freq": frequency(e), **env}
+        if name == "crackle":
+            controls["density"] = _number(e.get("density")) or CRACKLE_DENSITY
+        return Voice(f"dough_{name}", controls, 1, _gate(e, life))
+    if find_sample is None:
+        return None
+    return _sample_voice(e, name, duration, find_sample)
+
+
+def _sample_voice(
+    e: Mapping[str, Any], name: str, duration: float, find: FindSample
+) -> Voice | None:
+    """``onTriggerSample`` and ``getSampleBufferSource`` (sampler.mjs)."""
+    target = midi(e)
+    n = _number(e.get("n")) or 0.0
+    found = find(name, math.floor(n + 0.5), target)  # getSoundIndex: Math.round, then mod
+    if found is None:
+        return None
+    sample, root = found
+    header = sample.header
+    if header is None or header.channels > 2:
+        return None
+    speed = _number(e.get("speed"))
+    speed = 1.0 if speed is None else speed
+    if e.get("unit") == "c":  # Strudel's OSC output divides speed by cps; superdough does not
+        speed *= _number(e.get("cps")) or 0.5
+    if speed == 0:
+        return SILENT
+    transpose = target - (36 if root is None else root)
+    rate = abs(speed) * 2 ** (transpose / 12)
+    if e.get("unit") == "c":
+        rate *= header.duration
+    begin, end = (_number(e.get(k)) for k in ("begin", "end"))
+    begin, end = 0.0 if begin is None else begin, 1.0 if end is None else end
+    loop = bool(e.get("loop"))
+    if e.get("clip") is None and e.get("loop") is None and e.get("release") is None:
+        duration = (end - begin) * header.duration / rate  # the slice
+    env, life = _envelope(e, SAMPLE_ENVELOPE, duration)
+    frames = header.frames
+    offset = begin * frames
+    loop_begin, loop_end = (_number(e.get(k)) for k in ("loopBegin", "loopEnd"))
+    loop_begin, loop_end = (
+        (0.0 if loop_begin is None else loop_begin),
+        (1.0 if loop_end is None else loop_end),
+    )
+    if speed < 0:  # superdough plays a reversed copy of the buffer
+        start = frames - 1 - offset
+        loop_begin, loop_end = 1 - loop_end, 1 - loop_begin
+        rate = -rate
+    else:
+        start = offset
+    controls = {
+        "rate": rate,
+        "start": start,
+        "loop": float(loop),
+        "loopStart": loop_begin * frames,
+        "loopEnd": loop_end * frames,
+        "frames": frames,
+        **env,
+    }
+    cut = _number(e.get("cut"))
+    return Voice(
+        f"dough_sample{header.channels}",
+        controls,
+        header.channels,
+        _gate(e, life),
+        sample=sample,
+        cut=None if cut is None else int(cut),
+        nudge=_number(e.get("nudge")) or 0.0,
+    )
+
+
+# -- SynthDefs --------------------------------------------------------------------------
 
 
 def _pink() -> Any:
@@ -151,32 +290,109 @@ def _source(name: str, freq: Any, density: Any) -> Any:
     return Dust2.ar(density=density * 0.01 * SampleRate.ir())  # crackle
 
 
+def _envelope_controls() -> dict[str, Any]:
+    controls = {f"l{i}": control(0.0, "ir") for i in (1, 2, 3, 4)}
+    controls |= {f"t{i}": control(0.0, "ir") for i in (1, 2, 3, 4)}
+    return controls
+
+
+def _env(b: SynthDefBuilder) -> Any:
+    return EnvGen.ar(
+        envelope=Envelope(
+            amplitudes=[0.0, b["l1"], b["l2"], b["l3"], b["l4"]],
+            durations=[b["t1"], b["t2"], b["t3"], b["t4"]],
+            curves=["linear"],
+        ),
+        done_action=2,
+    )
+
+
+def _sample(channels: int) -> SynthDef:
+    """An ``AudioBufferSourceNode``: linear interpolation, silent outside the buffer."""
+    controls = {
+        "out": control(0, "ir"), "buf": control(0, "ir"), "rate": control(1.0, "ir"),
+        "start": control(0.0, "ir"), "loop": control(0.0, "ir"), "loopStart": control(0.0, "ir"),
+        "loopEnd": control(0.0, "ir"), "frames": control(1.0, "ir"), **_envelope_controls(),
+    }  # fmt: skip
+    with SynthDefBuilder(**controls) as b:
+        straight = b["start"] + Sweep.ar(rate=b["rate"] * BufSampleRate.ir(buffer_id=b["buf"]))
+        looped = Phasor.ar(
+            trigger=Impulse.ar(frequency=0),
+            rate=b["rate"] * BufRateScale.ir(buffer_id=b["buf"]),
+            start=b["loopStart"],
+            stop=b["loopEnd"],
+            reset_pos=b["start"],
+        )
+        phase = Select.ar(selector=b["loop"], sources=[straight, looped])
+        inside = ((phase >= 0) * (phase <= b["frames"] - 1)).max_(b["loop"])
+        sig = BufRd.ar(
+            channel_count=channels, buffer_id=b["buf"], phase=phase, loop=0, interpolation=2
+        )
+        env = _env(b) * inside
+        Out.ar(bus=b["out"], source=[x * env for x in sig] if channels > 1 else sig * env)
+    return b.build(name=f"dough_sample{channels}")
+
+
+def _gate_def(channels: int, num_channels: int) -> SynthDef:
+    """``StereoPannerNode`` (Web Audio's equal-power rules for mono and stereo input), postgain."""
+    controls = {
+        "in": control(0, "ir"), "out": control(0, "ir"), "level": control(DEFAULT_GAIN),
+        "pan": control(0.5), "panned": control(0.0, "ir"), "life": control(1.0, "ir"),
+        "cut_gate": control(1.0),
+    }  # fmt: skip
+    with SynthDefBuilder(**controls) as b:
+        half_pi = math.pi / 2
+        if channels == 1:
+            x = In.ar(bus=b["in"], channel_count=1)
+            angle = b["pan"].clip(0, 1) * half_pi
+            left = x * (b["panned"] * angle.cos_() + (1 - b["panned"]))
+            right = x * (b["panned"] * angle.sin_() + (1 - b["panned"]))
+        else:
+            in_l, in_r = In.ar(bus=b["in"], channel_count=2)
+            p = (b["pan"] * 2 - 1).clip(-1, 1)
+            low = (p + 1) * half_pi  # p <= 0: the right channel moves left
+            high = p * half_pi  # p > 0: the left channel moves right
+            left = Select.ar(selector=p > 0, sources=[in_l + in_r * low.cos_(), in_l * high.cos_()])
+            right = Select.ar(
+                selector=p > 0, sources=[in_r * low.sin_(), in_r + in_l * high.sin_()]
+            )
+        life = EnvGen.ar(
+            envelope=Envelope(amplitudes=[1.0, 1.0], durations=[b["life"]]), done_action=14
+        )
+        cut = EnvGen.ar(  # a cut group fades the previous sound over 10 ms (sampler.mjs)
+            envelope=Envelope(amplitudes=[1.0, 1.0, 0.0], durations=[0.0, 0.01], release_node=1),
+            gate=b["cut_gate"],
+            done_action=14,
+        )
+        level = b["level"] * life * cut
+        stereo = [left * level, right * level]
+        OffsetOut.ar(bus=b["out"], source=stereo if num_channels > 1 else left * level)
+        ReplaceOut.ar(bus=b["in"], source=[DC.ar(source=0)] * channels)  # clear for the next voice
+    return b.build(name=f"dough_gate{channels}_{num_channels}")
+
+
 def synthdefs(num_channels: int) -> list[SynthDef]:
     defs = []
     for name in [*dict.fromkeys(OSCILLATORS.values()), *sorted(NOISES)]:
-        controls = {"out": control(0, "ir"), "amp": control(0.0), "freq": control(440.0)}
-        controls |= {f"l{i}": control(0.0, "ir") for i in (1, 2, 3)}
-        controls |= {f"t{i}": control(0.0, "ir") for i in (1, 2, 3, 4)}
+        controls = {"out": control(0, "ir"), "amp": control(SOURCE_LEVEL), "freq": control(440.0)}
+        controls |= _envelope_controls()
         controls["density"] = control(CRACKLE_DENSITY, "ir")
         with SynthDefBuilder(**controls) as b:
-            env = Envelope(
-                amplitudes=[0.0, b["l1"], b["l2"], b["l3"], 0.0],
-                durations=[b["t1"], b["t2"], b["t3"], b["t4"]],
-                curves=["linear"],
-            )
-            gate = EnvGen.ar(envelope=env, done_action=2)
-            sig = _source(name, b["freq"], b["density"]) * gate * b["amp"]
-            Out.ar(bus=b["out"], source=[sig] * min(num_channels, 2))
-        defs.append(b.build(name=f"dough_{name}{num_channels}"))
+            Out.ar(bus=b["out"], source=_source(name, b["freq"], b["density"]) * _env(b) * b["amp"])
+        defs.append(b.build(name=f"dough_{name}"))
+    defs += [_sample(1), _sample(2), _gate_def(1, num_channels), _gate_def(2, num_channels)]
     return defs
 
 
 __all__ = [
     "NOISES",
     "OSCILLATORS",
+    "SILENT",
+    "Voice",
     "adsr_values",
     "envelope_points",
     "frequency",
+    "midi",
     "synthdefs",
     "voice",
 ]
