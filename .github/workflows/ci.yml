@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    name: qa (lint + format + typecheck)
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+
+      # pyproject.toml points nanosynth at a local checkout; CI uses the PyPI release.
+      - name: Install dependencies
+        run: uv sync --no-sources
+
+      - name: Lint
+        run: uv run --no-sources ruff check src/ tests/
+
+      - name: Format check
+        run: uv run --no-sources ruff format --check src/ tests/
+
+      - name: Type check
+        run: uv run --no-sources mypy --strict src/
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+
+    runs-on: ${{ matrix.os }}
+    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # nanosynth's Linux wheel links ALSA (RtMidi/PortAudio).
+      - name: Install ALSA
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --no-sources
+
+      - name: Test
+        run: uv run --no-sources pytest tests/

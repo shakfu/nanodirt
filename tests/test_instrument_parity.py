@@ -82,11 +82,6 @@ RANDOM = {
 }  # fmt: skip
 
 
-# SuperDirt's own superprimes renders silence in NRT for every setting tried
-# (voice 0.1-2, sustain 0.2-1, rate 1-8); nanodirt's must match that.
-SILENT_UPSTREAM = {"superprimes"}
-
-
 def _rms(xs: list[float]) -> float:
     return (sum(x * x for x in xs if x == x) / len(xs)) ** 0.5
 
@@ -102,9 +97,6 @@ def test_matches_superdirt(name: str, tmp_path: Path) -> None:
     )
     got = render(ours.compile(), name, controls, tmp_path / "got.wav", **opts)
     diff, peak = compare(ref, got)
-    if name in SILENT_UPSTREAM:
-        assert peak == 0.0 and diff == 0.0
-        return
     assert peak > 0.001, "silent reference: the comparison proves nothing"
     if name in RANDOM:
         assert abs(_rms(ref) - _rms(got)) < 0.3 * _rms(ref), (_rms(ref), _rms(got))

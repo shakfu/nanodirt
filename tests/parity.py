@@ -88,7 +88,8 @@ def render(
         path,
         sample_format="float",
         output_channels=channels,
-        options=Options(verbosity=-1, memory_size=8192 * 32),  # SuperDirt's; GVerb needs it
+        # SuperDirt's: GVerb needs the memory, superprimes the wire buffers
+        options=Options(verbosity=-1, memory_size=8192 * 32, wire_buffer_count=2048),
     )
     raw = path.read_bytes()
     i = raw.find(b"data")
