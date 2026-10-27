@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0]
+
 ### Added
 
 - superdough's synth sources for Strudel events: `sine`, `triangle`, `square`, `sawtooth` (and `sin`, `tri`, `sqr`, `saw`), and `white`, `pink`, `brown`, `crackle` noise. They played nothing before. Envelope, gain and pitch follow superdough (`docs/dev/superdough-mapping.md`). Effects, `pan` and `n` (partials) do not apply to them yet. Tidal's `s "sine"` still plays the sample bank.
@@ -14,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A superdough oracle for the Strudel path: `scripts/superdough_oracle/` renders events through Strudel's own superdough in headless Chromium. Opt-in tests: `NANODIRT_TEST_SUPERDOUGH=1`.
 
 ### Changed
+
+- Requires `nanosynth>=0.5.1` (`PartConv`, for the Strudel reverb).
 
 - Strudel samples follow superdough, not SuperDirt: level `gain * velocity` (default 0.8, linear) instead of `0.4 * gain^4`, so they play about 2.7 times louder at default gain; `note` transposes a sample bank from note 36; a sample plays its whole slice unless `clip`, `loop` or `release` is set; `n` rounds instead of truncating; `cut` groups span all orbits. `pan` and `postgain` apply to every Strudel voice, and so do superdough's filters: `cutoff`, `hcutoff`, `bandf` with `resonance`/`hresonance`/`bandq` as the biquad's Q (in dB for lowpass and highpass), `ftype` 2 (24 dB), and the cutoff envelope (`lpenv`, `lpattack`, ... and `hp*`, `bp*`, `fanchor`). The ladder filter (`ftype` 1) plays as 12 dB. Each orbit gets superdough's delay and reverb on first use: `delay` sends to a feedback delay (`delaytime`, default `delaysync` 3/16 cycle; `delayfeedback` 0.5, at most 0.98), `room` to a convolution reverb whose impulse response is generated as superdough's (`roomsize`, `roomfade`, `roomlp`, `roomdim`). `dry` scales the direct sound. Needs nanosynth's `PartConv`. Strudel events naming a SuperDirt synth (`superpiano`, ...) still play through SuperDirt.
 

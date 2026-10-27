@@ -1,6 +1,6 @@
 [project]
 name = "nanodirt"
-version = "0.1.0"
+version = "0.2.0"
 description = "SuperDirt's event model on nanosynth: a Dirt backend for TidalCycles, Strudel and vortex"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -22,7 +22,7 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: Sound Synthesis",
 ]
 dependencies = [
-    "nanosynth>=0.5.0",
+    "nanosynth>=0.5.1",
     "websockets>=13",
 ]
 
