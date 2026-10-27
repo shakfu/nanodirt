@@ -10,7 +10,9 @@ nanodirt vortex             # vortex in one process (needs vortex installed)
 ```
 
 - **Tidal:** the stock `BootTidal.hs` works unchanged (UDP 57120, engine on 57110).
+
 - **Strudel:** choose OSC output in strudel.cc's settings; nanodirt serves `ws://localhost:8080`. Strudel's default sample maps download on first use.
+
 - **vortex:** `nanodirt vortex` replaces vortex's `boot` module, so patterns play in-process.
 
 SynthDefs, modules and instruments are translated from SuperDirt `650a1d6` and checked against it; see `docs/dev/status.md`.
