@@ -21,7 +21,7 @@ import pytest
 from nanosynth.osc import OscMessage
 from nanosynth.score import Score
 from nanosynth.scsynth import Options
-from parity import write_test_wav
+from parity import _helper_defs, write_test_wav
 
 from nanodirt import dough, dough_orbit
 from nanodirt.library import Sample, read_header
@@ -32,6 +32,7 @@ import superdough_oracle  # noqa: E402
 RATE = 44100
 NUM_CHANNELS = 2
 DEFS = {d.effective_name: d for d in [*dough.synthdefs(NUM_CHANNELS), *dough_orbit.synthdefs()]}
+DEFS["parity_seed"] = _helper_defs(1)[2]  # RandSeed: the same random draws on every run
 DELAY_BUS, ROOM_BUS = 66, 68
 SYNTH_BUS = 64  # private in NRT
 Frames = list[tuple[float, float]]
@@ -102,7 +103,8 @@ def nrt(
             "/s_new", "dough_reverb", 2001, 3, 900, "in", ROOM_BUS, "out", 0, "left", 12, "right", 13,
         ))  # fmt: skip
     flat = lambda d: [x for kv in d.items() for x in kv]  # noqa: E731
-    score.add(0.0, OscMessage("/g_new", 900, 0, 0))
+    score.add(0.0, OscMessage("/s_new", "parity_seed", 999, 0, 0))  # repeatable noise
+    score.add(0.0, OscMessage("/g_new", 900, 1, 0))
     score.add(0.0, OscMessage("/s_new", v.source, 1000, 0, 900, *flat(source)))
     for k, (kind, c) in enumerate(v.filters):
         score.add(
