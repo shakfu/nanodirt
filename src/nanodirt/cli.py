@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import signal
@@ -59,6 +60,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--no-strudel-maps", action="store_true", help="do not load Strudel's default sample maps"
     )
+    r = sub.add_parser("render", help="render a Strudel file to WAV, without a browser")
+    r.add_argument("file", type=Path, help="Strudel code")
+    r.add_argument("-o", "--output", type=Path, help="WAV file (default: FILE with .wav)")
+    r.add_argument("--cycles", type=float, default=8.0)
+    r.add_argument("--sample-rate", type=int, default=48000)
+    r.add_argument("--tail", type=float, default=2.0, help="seconds after the last event")
     v = sub.add_parser("vortex", help="run vortex with nanodirt as its output, in one process")
     v.add_argument("--cli", action="store_true", help="vortex's REPL instead of its editor")
     return p
@@ -101,6 +108,33 @@ def fetch_samples(what: str = "Dirt-Samples") -> int:
             str(DEFAULT_SAMPLES),
         ]
     )
+
+
+def render_file(args: argparse.Namespace) -> int:
+    from .headless import StrudelError, render
+
+    out = args.output or args.file.with_suffix(".wav")
+    local = [x for x in args.samples if not is_map(x)]
+    if not local and DEFAULT_SAMPLES.exists():
+        local = [str(DEFAULT_SAMPLES)]
+    code = args.file.read_text()
+    maps = "".join(f"samples({json.dumps(m)});\n" for m in args.samples if is_map(m))
+    try:
+        n = render(
+            maps + code,
+            out,
+            cycles=args.cycles,
+            samples=local,
+            strudel_maps=not args.no_strudel_maps,
+            num_channels=args.channels,
+            sample_rate=args.sample_rate,
+            tail=args.tail,
+        )
+    except StrudelError as exc:
+        print(f"nanodirt: {args.file}: {exc}", file=sys.stderr)
+        return 1
+    print(f"nanodirt: {n} events, {args.cycles:g} cycles in {out}")
+    return 0
 
 
 def start(args: argparse.Namespace):  # type: ignore[no-untyped-def]
@@ -152,6 +186,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.command == "samples":
         return fetch_samples(args.what)
+    if args.command == "render":
+        return render_file(args)
     if args.command == "vortex":
         from .vortex import run
 

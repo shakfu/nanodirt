@@ -1,0 +1,10 @@
+{ "private": true, "type": "module",
+  "dependencies": {
+    "esbuild": "0.25.10",
+    "fraction.js": "5.2.1",
+    "acorn": "8.14.0",
+    "escodegen": "2.1.0",
+    "estree-walker": "3.0.3",
+    "@tonaljs/tonal": "4.10.0",
+    "chord-voicings": "0.0.1"
+  } }

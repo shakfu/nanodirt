@@ -16,6 +16,9 @@ nanodirt replaces SuperCollider + SuperDirt for users of TidalCycles, Strudel an
 | `docs/dev/strudel-headless.md` | Scope: Strudel code in-process via a QuickJS wrapper in nanosynth |
 | `docs/dev/spike-results.md` | What the spike proved, measured timings, findings |
 | `docs/dev/strudel-usage.md` | Which superdough sources and controls Strudel code uses; scope for M5 |
+| `docs/dev/soundfonts.md` | `gm_` soundfonts: data source, licences, plan |
+| `docs/dev/gaps.md` | Where nanodirt differs from strudel.cc and stock SuperDirt |
+| `docs/dev/rustel.md` | Comparison with rustel, a native Strudel port |
 | nanosynth `docs/dev/roadmap.md` | Requirements, milestones and status across both packages |
 | nanosynth `docs/dev/livecoding.md` | Options considered and why nanodirt |
 

@@ -87,9 +87,10 @@ def map_url(spec: str) -> str:
 class StrudelSamples:
     """Sounds from Strudel sample maps, downloaded on first use."""
 
-    def __init__(self, cache: Path, fetch: bool = True) -> None:
+    def __init__(self, cache: Path, fetch: bool = True, blocking: bool = False) -> None:
         self.cache = cache
         self.fetch = fetch
+        self.blocking = blocking  # download on first use, before returning (offline rendering)
         self.banks: dict[str, list[str] | dict[str, list[str]]] = {}
         self.aliases: dict[str, str] = {}
         self.samples: dict[str, Sample] = {}
@@ -177,10 +178,15 @@ class StrudelSamples:
             if sample is not None:
                 return sample
             path = self._cache_path(url)
+            if not path.exists() and self.fetch and self.blocking:
+                try:
+                    self._download(url)
+                except OSError as exc:
+                    logger.warning("cannot download %s: %s", url, exc)
             if path.exists():
                 sample = self.samples[url] = Sample(path)
                 return sample
-            if self.fetch and url not in self._pending:
+            if self.fetch and not self.blocking and url not in self._pending:
                 self._pending.add(url)
                 self._queue.put(url)
                 self._start_worker()

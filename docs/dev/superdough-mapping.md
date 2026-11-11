@@ -244,4 +244,4 @@ Comparison:
 
 3. Controls by usage: filter envelope, FM, ducking, pitch envelope, `vib`, `compressor`, `supersaw` `unison`.
 
-4. `gm_` soundfonts, after their data source and licence are checked.
+4. `gm_` soundfonts. Licences checked 2026-11-11: fetch on demand, never bundle (`soundfonts.md`).

@@ -112,4 +112,4 @@ Handled names whose superdough and SuperDirt semantics differ (TODO M5), repo-we
 
 - 15 controls, in five groups (filter envelope, FM, ducking, pitch envelope, `postgain`/`vib`/`compressor`/`unison`), cover every unhandled control at 3% or more. Specifying all 167 is not needed for the first version.
 
-- `gm_` soundfonts come from a separate package (`packages/soundfonts`), not from the sample maps nanodirt loads. Their data source and licence need checking before planning.
+- `gm_` soundfonts come from a separate package (`packages/soundfonts`), not from the sample maps nanodirt loads. Data source, licences and plan: `soundfonts.md`.

@@ -1,0 +1,7 @@
+include setup.py
+recursive-include csrc *.c LICENSE
+recursive-include thirdparty/quickjs-ng *.c *.h LICENSE
+recursive-include LICENSES *
+recursive-include scripts/strudel_bundle *.mjs *.json *.py
+prune spike
+prune scripts/strudel_bundle/node_modules

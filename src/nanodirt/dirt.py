@@ -284,6 +284,7 @@ class Dirt:
         self.sample_rate = sample_rate
         self.late_threshold = late_threshold
         self.late_dropped = 0
+        self.clock: Callable[[], float] = time.time  # an offline engine supplies its own
         self.library = SoundLibrary(num_channels, read_buffer=getattr(server, "read_buffer", None))
         self.remote: Any = None  # StrudelSamples, consulted after local banks
         self.synthdefs: dict[str, SynthDef] = {}
@@ -384,7 +385,7 @@ class Dirt:
 
     def _schedule(self, timestamp: float | None) -> float | None:
         """The time to play an event stamped *timestamp*, or None if it is too late."""
-        now = time.time()
+        now = self.clock()
         if timestamp is None:
             timestamp = now
         latency = timestamp - now
@@ -502,18 +503,24 @@ class Dirt:
                 return
             first = fx.reverb_pending is None
             fx.reverb_pending = target
-        if first:
+        if first and getattr(self.server, "synchronous", False):  # offline: ready at once
+            self._build_reverb(orbit, fx)
+        elif first:
             threading.Thread(
                 target=self._build_reverb, args=(orbit, fx), name="nanodirt-reverb", daemon=True
             ).start()
 
     def _build_reverb(self, orbit: Orbit, fx: Any) -> None:
         """Generate and load IRs until the latest requested one is playing."""
+        import contextlib
         import random
         import tempfile
         from pathlib import Path
 
         from .dough_orbit import ir_messages, prepare_ir
+
+        # An offline engine reads the IR when it renders, so it keeps the file in its workdir.
+        workdir = getattr(self.server, "workdir", None)
 
         if not hasattr(self.server, "sync"):  # a fake server in tests
             fx.reverb_pending = None
@@ -524,8 +531,11 @@ class Dirt:
                 params = fx.reverb_pending
             if params is None:
                 return
-            with tempfile.TemporaryDirectory() as tmp:
-                path = Path(tmp) / "ir.wav"
+            with (
+                contextlib.nullcontext(workdir) if workdir else tempfile.TemporaryDirectory() as tmp
+            ):
+                with tempfile.NamedTemporaryFile(suffix=".wav", dir=tmp, delete=False) as f:
+                    path = Path(f.name)
                 frames = prepare_ir(params, self.sample_rate, block, random.Random(), path)
                 ir = (self.server.next_buffer_id(), self.server.next_buffer_id())
                 spec = (self.server.next_buffer_id(), self.server.next_buffer_id())

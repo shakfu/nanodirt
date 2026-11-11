@@ -3,7 +3,8 @@ name = "nanodirt"
 version = "0.2.0"
 description = "SuperDirt's event model on nanosynth: a Dirt backend for TidalCycles, Strudel and vortex"
 readme = "README.md"
-license = "GPL-3.0-or-later"
+license = "GPL-3.0-or-later AND AGPL-3.0-or-later AND MIT"
+license-files = ["LICENSE", "LICENSES/*"]
 authors = [{ name = "Shakeeb Alireza", email = "shakfu@users.noreply.github.com" }]
 requires-python = ">=3.10"
 keywords = ["superdirt", "tidalcycles", "strudel", "vortex", "supercollider", "live-coding"]
@@ -49,14 +50,15 @@ dev = [
 nanosynth = { path = "../nanosynth", editable = true }
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/nanodirt"]
+# The extension (nanodirt._quickjs) is declared in setup.py.
+[tool.setuptools.packages.find]
+where = ["src"]
 
-[tool.hatch.build.targets.sdist]
-exclude = ["spike"]
+[tool.setuptools.package-data]
+nanodirt = ["py.typed", "*.pyi", "js/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
