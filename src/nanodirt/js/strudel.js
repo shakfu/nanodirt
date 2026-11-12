@@ -10421,7 +10421,12 @@
 
   // prelude.mjs
   var host = (name3) => globalThis[`__nanodirt_host_${name3}`];
-  var log = (level) => (...args) => host("log")?.(level, args.map((a) => a instanceof Error ? a.message : String(a)).join(" "));
+  var unstyle = (args) => {
+    if (typeof args[0] !== "string" || !args[0].includes("%c")) return args;
+    const n2 = args[0].split("%c").length - 1;
+    return [args[0].replaceAll("%c", ""), ...args.slice(1 + n2)];
+  };
+  var log = (level) => (...args) => host("log")?.(level, unstyle(args).map((a) => a instanceof Error ? a.message : String(a)).join(" "));
   globalThis.console ??= { log: log("info"), info: log("info"), debug: log("debug"), warn: log("warning"), error: log("error") };
   globalThis.setTimeout ??= () => 0;
   globalThis.clearTimeout ??= () => {
@@ -11986,37 +11991,7 @@
           z = 10 ** Math.floor(1 + Math.log10(p1));
           p1 /= z;
         }
-        while (B <= N && D <= N) {
-          let M2 = (A + C) / (B + D);
-          if (p1 === M2) {
-            if (B + D <= N) {
-              n2 = A + C;
-              d = B + D;
-            } else if (D > B) {
-              n2 = C;
-              d = D;
-            } else {
-              n2 = A;
-              d = B;
-            }
-            break;
-          } else {
-            if (p1 > M2) {
-              A += C;
-              B += D;
-            } else {
-              C += A;
-              D += B;
-            }
-            if (B > N) {
-              n2 = C;
-              d = D;
-            } else {
-              n2 = A;
-              d = B;
-            }
-          }
-        }
+        [n2, d] = __nanodirt_farey(p1, N);
         n2 = BigInt(n2) * BigInt(z);
         d = BigInt(d);
       }
@@ -12619,6 +12594,57 @@
       return this;
     }
   };
+  function __nanodirt_farey(p1, N) {
+    const run2 = (ok) => {
+      let lo = 0, hi = 1;
+      while (ok(hi)) {
+        lo = hi;
+        hi *= 2;
+      }
+      while (hi - lo > 1) {
+        const m2 = lo + hi >>> 1;
+        if (ok(m2)) lo = m2;
+        else hi = m2;
+      }
+      return lo + 1;
+    };
+    let n2 = 0, d = 1;
+    let A = 0, B = 1, C = 1, D = 1;
+    while (B <= N && D <= N) {
+      const M2 = (A + C) / (B + D);
+      if (p1 === M2) {
+        if (B + D <= N) {
+          n2 = A + C;
+          d = B + D;
+        } else if (D > B) {
+          n2 = C;
+          d = D;
+        } else {
+          n2 = A;
+          d = B;
+        }
+        break;
+      }
+      if (p1 > M2) {
+        const k = run2((j) => B + j * D <= N && p1 > (A + (j + 1) * C) / (B + (j + 1) * D));
+        A += k * C;
+        B += k * D;
+      } else {
+        const k = run2((j) => D + j * B <= N && p1 < (C + (j + 1) * A) / (D + (j + 1) * B));
+        C += k * A;
+        D += k * B;
+      }
+      if (B > N) {
+        n2 = C;
+        d = D;
+      } else {
+        n2 = A;
+        d = B;
+      }
+    }
+    return [n2, d];
+  }
+  globalThis.__nanodirt_farey = __nanodirt_farey;
 
   // ../../../../../.cache/nanodirt/superdough/strudel/packages/core/util.mjs
   var isNoteWithOctave = (name3) => /^[a-gA-G][#bsf]*[0-9]*$/.test(name3);
@@ -28939,11 +28965,18 @@ Please check with "npm ls @strudel/core".`
   });
   var scoped = null;
   var status = { state: "idle" };
+  var cpsCalls = [];
+  var schedulerSetCps = r.scheduler.setCps.bind(r.scheduler);
+  r.scheduler.setCps = (cps2 = 0.5) => {
+    cpsCalls.push(cps2);
+    schedulerSetCps(cps2);
+  };
   var api = {
     /** Start evaluating *code*; the caller runs pending jobs, then reads result(). */
     evaluate(code) {
       status = { state: "pending" };
       evalError = null;
+      cpsCalls = [];
       scoped ??= evalScope2(core_exports, mini_exports, tonal_exports, edo_exports, xen_exports, hostScope);
       scoped.then(() => r.evaluate(code, false)).then(() => {
         status = evalError ? { state: "error", message: String(evalError.message ?? evalError), stack: String(evalError.stack ?? "") } : { state: "ok" };
@@ -28952,7 +28985,7 @@ Please check with "npm ls @strudel/core".`
       });
     },
     result() {
-      return JSON.stringify({ ...status, cps: r.scheduler.cps });
+      return JSON.stringify({ ...status, cps: r.scheduler.cps, cpsCalls });
     },
     /** Onset events in cycles [begin, end) at *cps*, and how many haps had no OSC fields, as JSON. */
     query(begin2, end2, cps2) {

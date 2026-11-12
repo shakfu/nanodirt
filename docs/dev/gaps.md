@@ -57,7 +57,7 @@ Not checked against the oracle: `loop`. Reverb matches only statistically (tail 
 
 - A clock offset in Strudel's OSC mode is suspected, not verified (`integration.md`, "Possible clock offset").
 
-- Strudel code runs without a browser only offline (`nanodirt render`); the realtime runner is not done (`strudel-headless.md`).
+- Without a browser (`nanodirt strudel`), a file is evaluated whole on save. Evaluating one block, as strudel.cc's editor does, needs an editor plugin (`strudel-headless.md`).
 
 ## Tidal
 
@@ -69,9 +69,11 @@ Reference: SuperDirt `650a1d6` (`superdirt-parameter-mapping.md`). The event pat
 
 - **MIDI output** (`s "midi"` with SuperDirt `addMIDI` targets) is not implemented. nanosynth already has RtMidi.
 
-- **Audio setup.** The CLI has `--channels` and `--orbits`, but no device, sample rate, block size or input options; the system default device is always used.
+- **Audio setup.** The CLI has `--channels`, `--orbits` and `--inputs`, but no device, sample rate or block size options; the system default device is always used.
 
 - **Random SynthDef constants.** `superhammond` and `superfm` redraw constants on every SuperDirt load, so no fixed draw matches a given session.
+
+- **`pmsin`** is not loaded: it reads the mouse through `MouseX`/`MouseY`, whose plugin (UIUGens) nanosynth does not ship. `s "pmsin"` plays nothing.
 
 - **Smaller features:** the WAV `smpl` chunk (`metatune`), `dirt_rms` replies for editor visualisations, `/dirt/synth-info` beyond control names, `IEnvGen` (only the unused `DirtEnvGen` needs it).
 

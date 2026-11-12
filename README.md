@@ -7,6 +7,7 @@ pip install nanodirt
 nanodirt samples fetch      # Dirt-Samples into ~/.cache/nanodirt
 nanodirt                    # Tidal and Strudel: start this, then use the editor as usual
 nanodirt vortex             # vortex in one process (needs vortex installed)
+nanodirt strudel song.strudel            # play Strudel code without a browser; re-evaluates on save
 nanodirt render song.strudel --cycles 8   # Strudel code to WAV, without a browser
 ```
 
@@ -16,7 +17,7 @@ nanodirt render song.strudel --cycles 8   # Strudel code to WAV, without a brows
 
 - **vortex:** `nanodirt vortex` replaces vortex's `boot` module, so patterns play in-process.
 
-- **Strudel without a browser:** `nanodirt render` runs Strudel's own pattern engine in an embedded QuickJS and renders offline. From Python: `nanodirt.headless.Strudel` evaluates and queries code.
+- **Strudel without a browser:** `nanodirt strudel` and `nanodirt render` run Strudel's own pattern engine in an embedded QuickJS, to play live or render offline. From Python: `nanodirt.headless.Strudel` evaluates and queries code; `Scheduler` plays it.
 
 SynthDefs, modules and instruments are translated from SuperDirt `650a1d6` and checked against it; see `docs/dev/status.md`.
 

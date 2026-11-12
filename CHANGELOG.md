@@ -9,13 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Strudel code without a browser. `nanodirt render song.strudel` renders it to WAV; `nanodirt.headless.Strudel` evaluates and queries it from Python. Strudel's own pattern packages at `a3302cf` run in QuickJS, so patterns follow upstream rather than a port. `samples()` in the code loads maps into nanodirt; drawing methods do nothing. Scope: `docs/dev/strudel-headless.md`.
+- Strudel code without a browser. `nanodirt render song.strudel` renders it to WAV; `nanodirt.headless.Strudel` evaluates and queries it from Python. Strudel's own pattern packages at `a3302cf` run in QuickJS, so patterns follow upstream rather than a port. `samples()` in the code loads maps into nanodirt; drawing methods do nothing. The bundle patches fraction.js 5.2.1's float-to-fraction conversion (`scripts/strudel_bundle/farey.js`), which steps through the Stern-Brocot tree one mediant at a time: a float one ulp from a short fraction took up to 10^7 steps, so one tune evaluated in 1.0 s instead of 14 ms. The patch takes each run of steps at once and returns the same fractions. Scope: `docs/dev/strudel-headless.md`.
+
+- `nanodirt strudel song.strudel` plays Strudel code live, without a browser, and re-evaluates it on each save. A failed evaluation is reported and the previous pattern plays on. Events are timed as Strudel's own scheduler (`cyclist.mjs`) times them; `nanodirt.headless.Scheduler` runs it from Python. Each save evaluates in a fresh runtime, swapped in on success, so a slow evaluation drops no events; state the code leaves in the runtime does not carry over, unlike on strudel.cc. It opens no audio input, so macOS does not ask for the microphone.
+
+- `--inputs N` sets the engine's audio input channels: 2 by default, as SuperDirt, for its `in` and `inr` instruments; 0 for `nanodirt strudel`. On macOS, opening input asks for microphone access, so `nanodirt --inputs 0` avoids the prompt.
 
 - Rendering through Dirt offline: `nanodirt.offline.OfflineEngine` records Dirt's messages into a nanosynth `Score`.
 
 ### Changed
 
 - nanodirt is now a compiled package: it vendors quickjs-ng 0.18.0 and genotrance's MIT binding, built with setuptools as one stable-ABI wheel per platform. The binding's time limit counts the evaluating thread's CPU time, not the process's, which includes the engine's audio thread. A context can be shared between threads: upstream crashed when two threads used one, and raised a false `StackOverflow` because QuickJS checked one thread's stack against another's. A JS call made from inside a Python callback no longer clears the outer call's time limit. The package licence is `GPL-3.0-or-later AND AGPL-3.0-or-later AND MIT`: it ships the AGPL Strudel bundle.
+
+### Fixed
+
+- Every start printed `exception in GraphDef_Recv: UGen 'MouseX' not installed.`: `pmsin` needs UIUGens, which nanosynth does not ship. It is no longer sent, and `s "pmsin"` plays nothing, as before.
 
 ## [0.2.0]
 

@@ -93,12 +93,21 @@ const r = repl({
 });
 let scoped = null;
 let status = { state: 'idle' };
+// setcps/setcpm calls of the last evaluation, in order: the caller applies them to its own
+// scheduler (cyclist.mjs setCps), which an event's cps may have changed since.
+let cpsCalls = [];
+const schedulerSetCps = r.scheduler.setCps.bind(r.scheduler);
+r.scheduler.setCps = (cps = 0.5) => {
+  cpsCalls.push(cps);
+  schedulerSetCps(cps);
+};
 
 const api = {
   /** Start evaluating *code*; the caller runs pending jobs, then reads result(). */
   evaluate(code) {
     status = { state: 'pending' };
     evalError = null;
+    cpsCalls = [];
     scoped ??= evalScope(core, mini, tonal, edo, xen, hostScope);
     scoped
       .then(() => r.evaluate(code, false))
@@ -112,7 +121,7 @@ const api = {
       });
   },
   result() {
-    return JSON.stringify({ ...status, cps: r.scheduler.cps });
+    return JSON.stringify({ ...status, cps: r.scheduler.cps, cpsCalls });
   },
   /** Onset events in cycles [begin, end) at *cps*, and how many haps had no OSC fields, as JSON. */
   query(begin, end, cps) {

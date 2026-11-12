@@ -17,8 +17,11 @@ DEFAULT_SAMPLES = (
 )
 
 
-def engine_options(args: argparse.Namespace):  # type: ignore[no-untyped-def]
-    """Engine options as SuperDirt's startup file sets them."""
+def engine_options(args: argparse.Namespace, inputs: int = 2):  # type: ignore[no-untyped-def]
+    """Engine options as SuperDirt's startup file sets them.
+
+    *inputs* opens the audio input device, which on macOS asks for microphone access.
+    """
     from nanosynth.scsynth import Options
 
     return Options(
@@ -28,7 +31,7 @@ def engine_options(args: argparse.Namespace):  # type: ignore[no-untyped-def]
         maximum_node_count=1024 * 32,
         maximum_synthdef_count=4096,
         wire_buffer_count=2048,
-        input_bus_channel_count=2,
+        input_bus_channel_count=inputs,
         output_bus_channel_count=args.channels,
         verbosity=-1,
     )
@@ -46,6 +49,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--samples", action="append", default=[], help="sample folder (repeatable)")
     p.add_argument("--orbits", type=int, default=12)
     p.add_argument("--channels", type=int, default=2)
+    p.add_argument(
+        "--inputs",
+        type=int,
+        help="audio input channels, for SuperDirt's `in` and `inr` (default 2; 0 for strudel)."
+        " Opening input asks for microphone access on macOS",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="command")
     sp = sub.add_parser("samples", help="manage samples")
@@ -66,6 +75,8 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--cycles", type=float, default=8.0)
     r.add_argument("--sample-rate", type=int, default=48000)
     r.add_argument("--tail", type=float, default=2.0, help="seconds after the last event")
+    s = sub.add_parser("strudel", help="play a Strudel file, re-evaluated on each save")
+    s.add_argument("file", type=Path, help="Strudel code")
     v = sub.add_parser("vortex", help="run vortex with nanodirt as its output, in one process")
     v.add_argument("--cli", action="store_true", help="vortex's REPL instead of its editor")
     return p
@@ -137,13 +148,51 @@ def render_file(args: argparse.Namespace) -> int:
     return 0
 
 
-def start(args: argparse.Namespace):  # type: ignore[no-untyped-def]
+def play_strudel_file(args: argparse.Namespace) -> int:
+    from .headless import Scheduler, Strudel, load_sample_map, play_file
+    from .strudel import StrudelSamples
+
+    if not args.file.exists():
+        print(f"nanodirt: no such file: {args.file}", file=sys.stderr)
+        return 1
+    server, dirt = start(args, inputs=0)  # Strudel code reads no audio input
+    if dirt.remote is None:
+        dirt.remote = StrudelSamples(CACHE / "strudel")
+    remote = dirt.remote
+
+    def on_samples(spec: Any, base: str) -> None:
+        # In the background: a download inside evaluate would hold up the scheduler's queries.
+        def load() -> None:
+            try:
+                load_sample_map(remote, spec, base)
+            except OSError as exc:
+                print(f"nanodirt: cannot load samples {spec}: {exc}", file=sys.stderr)
+
+        threading.Thread(target=load, name="nanodirt-maps", daemon=True).start()
+
+    scheduler = Scheduler(lambda: Strudel(on_samples=on_samples), dirt.play_strudel)
+    stop = threading.Event()
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    print(f"nanodirt: playing {args.file}; save to re-evaluate, Ctrl-C to stop", flush=True)
+    try:
+        # flushed: an editor running this as a job reads the reports from a pipe
+        play_file(args.file, scheduler, stop, lambda m: print(m, flush=True))
+    finally:
+        scheduler.stop()
+        if dirt.late_dropped:
+            print(f"nanodirt: dropped {dirt.late_dropped} late events")
+        server.quit()
+    return 0
+
+
+def start(args: argparse.Namespace, inputs: int = 2):  # type: ignore[no-untyped-def]
     """Boot the engine and Dirt; return (server, dirt)."""
     from nanosynth.server import Server
 
     from .dirt import Dirt
 
-    server = Server(engine_options(args))
+    server = Server(engine_options(args, inputs if args.inputs is None else args.inputs))
     server.boot()
     rate = 48000.0
     try:
@@ -188,6 +237,8 @@ def main(argv: list[str] | None = None) -> int:
         return fetch_samples(args.what)
     if args.command == "render":
         return render_file(args)
+    if args.command == "strudel":
+        return play_strudel_file(args)
     if args.command == "vortex":
         from .vortex import run
 

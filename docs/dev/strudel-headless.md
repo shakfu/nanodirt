@@ -2,13 +2,13 @@
 
 Scope, 2026-10-27. Committed 2026-11-11, independent of rustel (`rustel.md`).
 
-Status 2026-11-11: done up to offline rendering (`nanodirt render`, `nanodirt.headless`). All 46 tunes give the same events in QuickJS as in Node (`tests/test_headless.py`); 39 evaluate, 7 fail in both on functions outside the bundled packages (Csound, Tone.js, note-name globals). Not done: the realtime scheduler and the `nanodirt strudel` runner. Rebuild the bundle with `python scripts/strudel_bundle/build.py` (needs git and Node). Goal: run Strudel code in-process, so it plays through nanodirt or renders offline with no browser and no Node.
+Status 2026-11-12: done. `nanodirt strudel song.strudel` plays a file and re-evaluates it on save; `nanodirt render` renders offline; `nanodirt.headless` exposes both to Python. All 46 tunes give the same events in QuickJS as in Node (`tests/test_headless.py`); 39 evaluate, 7 fail in both on functions outside the bundled packages (Csound, Tone.js, note-name globals). Block evaluation is out of scope for the file runner (Design). Rebuild the bundle with `python scripts/strudel_bundle/build.py` (needs git and Node). Goal: run Strudel code in-process, so it plays through nanodirt or renders offline with no browser and no Node.
 
 ## Uses
 
 | Use | For |
 |-|-|
-| `nanodirt strudel song.js`: play a file, re-evaluate on save | Editor users (nvim, VS Code, Zed and TUI integrations appear in the usage sample) |
+| `nanodirt strudel song.strudel`: play a file, re-evaluate on save | Editor users (nvim, VS Code, Zed and TUI integrations appear in the usage sample) |
 | `Strudel(dirt).evaluate(code)` | Scripting from Python |
 | Render Strudel code to WAV via nanosynth NRT | Tests, CI, sharing |
 
@@ -28,21 +28,21 @@ Strudel's pattern packages at `a3302cf` (`core`, `mini`, `transpiler`, `tonal`) 
 
 ## Timing
 
-Measured 2026-11-11 on macOS arm64, quickjs-ng 0.18.0, by `scripts/strudel_eval_timing.py`. 39 tunes evaluate; each figure is a tune's median of 3 runs, in ms. Query windows are 50 ms, over 4 cycles.
+Measured 2026-11-12 on macOS arm64, quickjs-ng 0.18.0, by `scripts/strudel_eval_timing.py`; Node 22.19 by `scripts/strudel_bundle/node_timing.mjs`. 39 tunes evaluate; each figure is a tune's median of 3 runs, in ms. Query windows are 50 ms, over 4 cycles from the given cycle.
 
-| ms | load | cold evaluate | warm evaluate | slowest query |
+| ms | load | warm evaluate | query from cycle 0 | query from cycle 1000 |
 |-|-|-|-|-|
-| p50 | 90 | 5.6 | 5.1 | 3.7 |
-| p90 | 91 | 27 | 26 | 12 |
-| max | 94 | 1018 | 1026 | 17 |
+| p50 | 95 | 5.5 | 3.9 | 4.2 |
+| p90 | 99 | 20 | 14 | 12 |
+| max | 112 | 79 | 19 | 19 |
 
-- `load` is a new runtime with the bundle; `warm` re-evaluates in the same runtime.
+- `load` is a new runtime with the bundle; `warm` re-evaluates in the same runtime. A first evaluate costs the same as a warm one.
 
-- 38 of 39 tunes evaluate in under 100 ms. `caverave` takes 1.0 s.
+- The slowest evaluate is `swimming` (79 ms). Node's median evaluate is about half QuickJS's.
 
-- Query bounds must be exact short fractions. A bound one ulp off one, as `begin += step` gives, took up to 320 ms against 1.3 ms. Inference: fraction.js 5.2.1 holds fractions as `BigInt`, and such a bound gets a denominator near 2^53. The script uses a 1/1024-cycle grid.
+- fraction.js 5.2.1 converts a float to a fraction by walking the Stern-Brocot tree one mediant per step, up to denominator 10^7. A float one ulp from a short fraction takes up to 10^7 steps. Such floats come from query bounds (`0.5 + 2^-52`) and from values >= 1, which `parse` divides by a power of ten first. With fraction.js's loop, in QuickJS: `caverave` evaluated in 1.0 s, a query from `0.5000000000000001` took 320 ms, and `festivalOfFingers3`'s queries rose from 15 to 95 ms between cycles 10 and 100. In Node's profiler `parse` was 48-69% of the time in all three. fraction.js 4.3.7 uses the same walk and gains 10-20%.
 
-- Query cost grows with the cycle number. From cycle 1000 (one run), the slowest query took 84 ms (`festivalOfFingers3`), against 17 ms from cycle 0. Evaluate times did not change. Node is not measured.
+- The bundle replaces the loop (`scripts/strudel_bundle/farey.js`): it takes each run of same-direction steps at once, by binary search on the loop's own float comparisons, so it returns the same fractions. Checks: `tests/test_headless.py` compares it with the loop; Node's events for the 46 tunes are byte-identical with and without it. After: `caverave` 14 ms, the off-grid query 1.5 ms, `festivalOfFingers3` 16-18 ms at every cycle.
 
 ## Design
 
@@ -54,11 +54,13 @@ Decided 2026-10-27: no third-party runtime dependencies. Decided 2026-11-11: eve
 
 - **JS harness:** evaluates through Strudel's own `repl` with the scheduler stubbed (`setInterval`, `getTime`), and answers `query(begin, end)` with events as JSON.
 
-- **Python scheduler:** queries the next window every ~50 ms, with bounds on an exact grid (see Timing), converts each event to the fields Strudel's OSC output sends (`parseControlsFromHap`: `cps`, `cycle`, `delta`, `midinote`, ...), and calls `Dirt.play_strudel`. Open question: how a slow re-evaluation avoids dropping events. Evaluating on another thread is not enough: `Strudel` serializes `evaluate` and `query` on one runtime, so a 1.0 s evaluate blocks queries for 1.0 s. Options:
-  - Two runtimes: evaluate in a spare, swap on success, preload the next spare (90 ms). `cps` and loaded sample maps must carry over.
-  - One runtime with a longer lookahead: covers 38 of 39 tunes at 100 ms (Timing), but every edit and `hush` waits that long.
+- **Python scheduler** (`Scheduler`): cyclist.mjs in a thread, with its windows, latency (0.1 s) and `cps` rules, so events land where strudel.cc puts them. Each event's fields are those Strudel's OSC output sends (`parseControlsFromHap`: `cps`, `cycle`, `delta`, `midinote`, ...); they go to `Dirt.play_strudel`. Each evaluation runs in a fresh runtime, loaded in the background after the previous one (95 ms), and replaces the playing runtime only if it succeeds. Queries never wait for an evaluation; with one shared runtime, a 0.6 s evaluate skipped 10 ticks (`test_slow_evaluation_drops_no_events`). Decided 2026-11-12 over one runtime, which holds only while every evaluate stays under about 0.1 s. The harness reports each `setcps`/`setcpm` call, and the scheduler applies them as cyclist.mjs's `setCps`; sample maps live in Python and carry over. Unlike strudel.cc, state that code leaves in the runtime (globals, `register`) does not carry into the next evaluation.
 
-- **Host functions:** `samples()` to nanodirt's Strudel sample maps; `setcps`, `setcpm`, `hush` to the scheduler; visual methods (`pianoroll`, `punchcard`, `color`, ...) pass the pattern through.
+- **Runner** (`nanodirt strudel FILE`): evaluates the file once its size and mtime hold for one 0.1 s poll, so a half-written save is not evaluated. A failed evaluation is reported and the previous pattern plays on. `samples()` loads maps in a background thread, so a download does not hold up the evaluation. The engine opens no audio input unless `--inputs` asks for it, so macOS does not ask for the microphone.
+
+- **Block evaluation** (`evaluateBlock`): out of scope for the file runner. strudel.cc's editor sends the block under the cursor; its labelled patterns replace their old versions, and other blocks keep what was last evaluated. A saved file has no cursor and is the whole source, and patterns depend only on time, so evaluating the file gives what evaluating every block gives. Evaluating one block needs an editor plugin that sends it.
+
+- **Host functions:** `samples()` to nanodirt's Strudel sample maps; `setcps`, `setcpm` to the scheduler; `hush()` silences through Strudel's own `repl`; visual methods (`pianoroll`, `punchcard`, `color`, ...) pass the pattern through.
 
 Out of scope: MIDI output, hydra, csound, Kabelsalat, drawing.
 
@@ -70,8 +72,8 @@ Out of scope: MIDI output, hydra, csound, Kabelsalat, drawing.
 | Bundle from a pinned revision; CI check that QuickJS and Node give the same events for all tunes | Low |
 | Event to OSC fields | Low |
 | Host functions, then the remaining tune failures | Medium |
-| Scheduler: windows, latency, `cps` changes; reuse the vortex clock's design | Medium |
-| CLI runner with block evaluation (`evaluateBlock`) and error reporting | Medium |
+| Scheduler: windows, latency, `cps` changes, as cyclist.mjs | Medium |
+| CLI runner with error reporting | Medium |
 | Offline render: query N cycles into a nanosynth `Score` | Low, after the above |
 
 ## Order
@@ -84,9 +86,7 @@ After the shared superdough voice chain (`superdough-mapping.md`, "Order of work
 
 - Terse QuickJS errors cost live coders time. Source maps would help.
 
-- Heavy patterns: one tune takes 1.0 s to evaluate, which blocks queries in the same runtime.
-
-- Query cost grows with the cycle number, beyond a 50 ms tick by cycle 1000 for one tune (Timing).
+- The fraction.js patch is tied to 5.2.1's source text; the build fails if the loop changes.
 
 ## Alternatives considered
 

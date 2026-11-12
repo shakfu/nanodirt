@@ -12,9 +12,9 @@ Wall-clock times, in ms; a tune's figure is the median of its repeats.
 - warm: evaluating the same code again in that runtime, as on re-evaluation after a save.
 - query: the slowest single query over 4 cycles from --at-cycle, in windows of --window seconds.
 
-Query bounds lie on a 1/1024-cycle grid. A bound one ulp off a short fraction, as from
-`begin += step`, made a query up to 250 times slower (320 ms against 1.3 ms): fraction.js
-5.2.1 turns it into a BigInt fraction with a denominator near 2**53.
+Query bounds lie on a 1/1024-cycle grid, so runs are comparable with bundles built before
+the fraction.js patch (scripts/strudel_bundle/farey.js), where a bound one ulp off a short
+fraction made a query up to 250 times slower.
 """
 
 from __future__ import annotations

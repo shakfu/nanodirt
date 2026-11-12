@@ -7,6 +7,7 @@ by ``scripts/strudel_bundle/build.py`` from the same bundle.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import struct
 import subprocess
@@ -15,6 +16,7 @@ import textwrap
 import threading
 import time
 import wave
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +24,15 @@ import pytest
 
 from nanodirt import _quickjs
 from nanodirt.cli import main
-from nanodirt.headless import Strudel, StrudelError, render, timeline
+from nanodirt.headless import (
+    LATENCY,
+    Scheduler,
+    Strudel,
+    StrudelError,
+    play_file,
+    render,
+    timeline,
+)
 from nanodirt.strudel import StrudelSamples
 
 FIXTURE = Path(__file__).parent / "fixtures" / "strudel_tunes.json"
@@ -231,6 +241,68 @@ def test_most_tunes_evaluate() -> None:
     assert len(TUNES) == 46 and len(ok) == 39
 
 
+# fraction.js 5.2.1's loop in parse, as a function; the bundle replaces it (farey.js).
+_FAREY_REFERENCE = """
+function slowFarey(p1, N) {
+  let n = 0, d = 1, A = 0, B = 1, C = 1, D = 1;
+  while (B <= N && D <= N) {
+    let M = (A + C) / (B + D);
+    if (p1 === M) {
+      if (B + D <= N) { n = A + C; d = B + D; } else if (D > B) { n = C; d = D; } else { n = A; d = B; }
+      break;
+    } else {
+      if (p1 > M) { A += C; B += D; } else { C += A; D += B; }
+      if (B > N) { n = C; d = D; } else { n = A; d = B; }
+    }
+  }
+  return [n, d];
+}
+function ulps(x, k) {
+  const f = new Float64Array([x]), u = new BigUint64Array(f.buffer);
+  u[0] += BigInt(k);
+  return f[0];
+}
+function differ(xs, N) {
+  return xs.filter((x) => {
+    const [a, b] = [slowFarey(x, N), __nanodirt_farey(x, N)];
+    return a[0] !== b[0] || a[1] !== b[1];
+  });
+}
+"""
+
+
+def test_fast_farey_matches_fraction_js() -> None:
+    """The bundle's float-to-fraction gives fraction.js's result, also next to short fractions."""
+    s = Strudel()
+    s._ctx.eval(_FAREY_REFERENCE)
+    cases = """
+      const xs = [];
+      for (let q = 1; q <= 60; q++) for (let p = 1; p < q; p++) for (let k = -3; k <= 3; k++) xs.push(ulps(p / q, k));
+      for (let c = 1; c < 5000; c += 3) for (const z of [10, 100, 1000, 1e4]) xs.push(c / 1024 / z);
+      let s = 1;
+      for (let i = 0; i < 3000; i++) xs.push((s = (s * 48271) % 2147483647) / 2147483647);
+    """
+    for n in (1e2, 1e4):
+        out = s._ctx.eval(
+            f"(() => {{ {cases} return JSON.stringify([xs.length, differ(xs, {n})]); }})()"
+        )
+        count, bad = json.loads(out)
+        assert count > 20000 and bad == [], (n, bad[:5])
+    # fraction.js's own bound, on its slowest inputs: one ulp from 1/2, 1/3, 3/4
+    out = s._ctx.eval("JSON.stringify(differ([ulps(1/2, 1), ulps(1/3, -1), ulps(3/4, 1)], 1e7))")
+    assert json.loads(out) == []
+
+
+def test_off_grid_query_is_fast() -> None:
+    """A bound one ulp from 1/2 took 265 ms per query with fraction.js's own loop, 1.5 ms now."""
+    s = Strudel()
+    s.evaluate('note("c3 e3 g3").s("sawtooth")')
+    s.query(0, 0.1)
+    start = time.perf_counter()
+    s.query(0.5000000000000001, 0.525)
+    assert time.perf_counter() - start < 0.05
+
+
 # -- timing ---------------------------------------------------------------------
 
 
@@ -243,6 +315,219 @@ def test_timeline_follows_cps_changes() -> None:
     assert times[:4] == [(0.0, 0), (0.25, 0.25), (0.5, 0.5), (0.75, 0.75)]
     # events of cycle 1 carry cps 2: the first window of cycle 1 is at cps 1, then 2
     assert times[4:] == [(1.0, 1), (1.25, 1.25), (1.5, 1.5), (1.625, 1.75)]
+
+
+# -- realtime scheduler ---------------------------------------------------------
+
+
+class FakeClock:
+    def __init__(self, t: float = 1000.0) -> None:
+        self.t = t
+
+    def __call__(self) -> float:
+        return self.t
+
+
+def drive(
+    code: str, seconds: float, clock: FakeClock | None = None
+) -> tuple[Scheduler, list[tuple[float, dict[str, Any]]]]:
+    """Run a Scheduler on a fake clock, one tick per INTERVAL; (scheduler, [(time, controls)])."""
+    clock = clock or FakeClock()
+    played: list[tuple[float, dict[str, Any]]] = []
+    sched = Scheduler(Strudel, lambda c, t: played.append((t, c)), clock)
+    sched.evaluate(code)
+    end = clock.t + seconds
+    while clock.t < end:
+        sched.tick()
+        clock.t += 0.1
+    return sched, played
+
+
+def test_scheduler_times_events_as_cyclist() -> None:
+    """First tick at now + 10 ms; an event plays at its cycle / cps after that, plus latency."""
+    _, played = drive('setcps(1)\ns("bd*4")', 2.0)
+    first = 1000.0 + 0.01 + LATENCY
+    assert [round(t, 9) for t, _ in played] == [
+        round(first + k * 0.25, 9) for k in range(len(played))
+    ]
+    assert len(played) >= 8 and all(c["s"] == "bd" and c["cps"] == 1 for _, c in played)
+
+
+def test_scheduler_plays_the_offline_timeline() -> None:
+    """Over a whole tune, the same events at the same times as timeline(), offset by the start."""
+    code = TUNES["festivalOfFingers3"]["code"]
+    sched, played = drive(code, 8.0)
+    cycles = sched._last_end
+    want = [(t, e.controls) for t, e in timeline(Strudel_with(code), cycles)]
+    got = [(t - (1000.0 + 0.01 + LATENCY), c) for t, c in played]
+    assert len(got) == len(want) > 50
+
+    def order(x: list[tuple[float, dict[str, Any]]]) -> list[tuple[float, dict[str, Any]]]:
+        # the windows differ, so does Strudel's order within one
+        return sorted(x, key=lambda e: (round(e[0], 6), json.dumps(e[1], sort_keys=True)))
+
+    for (tg, cg), (tw, cw) in zip(order(got), order(want), strict=True):
+        assert tg == pytest.approx(tw, abs=1e-9) and _close(cg, cw)
+
+
+def Strudel_with(code: str) -> Strudel:
+    s = Strudel()
+    s.evaluate(code)
+    return s
+
+
+def test_scheduler_follows_setcps_on_reevaluation() -> None:
+    clock = FakeClock()
+    sched, played = drive('setcps(1)\ns("bd")', 1.0, clock)
+    sched.evaluate('setcps(2)\ns("bd")')
+    assert sched.cps == 2
+    n = len(played)
+    for _ in range(20):
+        sched.tick()
+        clock.t += 0.1
+    times = [t for t, _ in played[n:]]
+    assert len(times) >= 3 and all(b - a == pytest.approx(0.5) for a, b in zip(times, times[1:]))
+
+
+def test_setcps_again_undoes_an_event_cps_change() -> None:
+    """As cyclist.mjs setCps: each setcps call applies, even with the value set before."""
+    clock = FakeClock()
+    sched, _ = drive('setcps(1)\ns("bd").cps(2)', 3.0, clock)
+    assert sched.cps == 2  # the events changed it
+    sched.evaluate('setcps(1)\ns("bd")')
+    assert sched.cps == 1
+
+
+def test_code_without_setcps_keeps_the_cps() -> None:
+    """A fresh runtime starts at cps 0.5; that is not a setcps call."""
+    sched, _ = drive('setcps(2)\ns("bd")', 0.5)
+    sched.evaluate('s("hh")')
+    assert sched.cps == 2
+
+
+def test_slow_evaluation_drops_no_events() -> None:
+    """Evaluation runs in a spare runtime, so the playing one keeps answering queries."""
+    played: list[float] = []
+    sched = Scheduler(Strudel, lambda c, t: played.append(t))
+    sched.evaluate('setcps(1)\ns("hh*8")')
+    sched.start()
+    try:
+        time.sleep(0.3)
+        start = time.perf_counter()
+        sched.evaluate(
+            'setcps(1)\nconst t0 = Date.now(); while (Date.now() - t0 < 600) {}\ns("hh*8")'
+        )
+        assert time.perf_counter() - start > 0.6
+        time.sleep(0.3)
+    finally:
+        sched.stop()
+    assert sched.skipped_ticks == 0
+    gaps = [b - a for a, b in zip(played, played[1:])]
+    assert len(played) > 10 and max(gaps) == pytest.approx(0.125, abs=1e-6)
+
+
+def test_scheduler_skips_ticks_in_the_past() -> None:
+    clock = FakeClock()
+    sched, played = drive('s("hh*8")', 0.5, clock)
+    clock.t += 2.0  # the process stalled
+    n = len(played)
+    sched.tick()
+    assert sched.skipped_ticks > 0
+    assert all(t > clock.t for t, _ in played[n:])
+
+
+def test_evaluation_error_is_raised_not_also_logged(caplog: pytest.LogCaptureFixture) -> None:
+    s = Strudel()
+    with caplog.at_level(logging.WARNING, logger="nanodirt.headless"):
+        with pytest.raises(StrudelError, match="not a function"):
+            s.evaluate('s("bd").nosuchmethod()')
+    assert caplog.records == []
+
+
+def test_failed_reevaluation_keeps_the_pattern() -> None:
+    clock = FakeClock()
+    sched, played = drive('s("bd*2")', 0.5, clock)
+    with pytest.raises(StrudelError):
+        sched.evaluate('s("bd*2").nosuchmethod()')
+    n = len(played)
+    for _ in range(10):
+        sched.tick()
+        clock.t += 0.1
+    assert len(played) > n and all(c["s"] == "bd" for _, c in played[n:])
+
+
+def test_scheduler_thread_plays_and_stops() -> None:
+    played: list[float] = []
+    sched = Scheduler(Strudel, lambda c, t: played.append(t))
+    sched.evaluate('setcps(1)\ns("hh*8")')
+    sched.start()
+    time.sleep(0.4)
+    sched.evaluate('setcps(1)\ns("hh*4")')  # from another thread, while it plays
+    time.sleep(0.2)
+    sched.stop()
+    n = len(played)
+    time.sleep(0.25)
+    assert n >= 4 and len(played) == n
+    assert sched._last_end == 0  # stopped: the next start is at cycle 0
+
+
+def test_play_file_reevaluates_on_save(tmp_path: Path) -> None:
+    song = tmp_path / "song.strudel"
+    song.write_text('setcps(1)\ns("bd*4")')
+    played: list[dict[str, Any]] = []
+    reports: list[str] = []
+    sched = Scheduler(Strudel, lambda c, t: played.append(c))
+    stop = threading.Event()
+    thread = threading.Thread(target=play_file, args=(song, sched, stop, reports.append, 0.02))
+    thread.start()
+
+    def wait_for(cond: Callable[[], bool]) -> None:
+        deadline = time.monotonic() + 5
+        while not cond():
+            assert time.monotonic() < deadline, (reports, played[-3:])
+            time.sleep(0.02)
+
+    try:
+        wait_for(lambda: any(c["s"] == "bd" for c in played))
+        song.write_text('setcps(1)\ns("hh*8")')
+        wait_for(lambda: played[-1]["s"] == "hh")
+        song.write_text('setcps(1)\ns("hh*8").nosuchmethod()')  # fails: hh plays on
+        wait_for(lambda: len(reports) == 3)
+        n = len(played)
+        wait_for(lambda: len(played) > n + 4)
+        assert all(c["s"] == "hh" for c in played[n:])
+    finally:
+        stop.set()
+        thread.join(5)
+        sched.stop()
+    assert reports[:2] == ["nanodirt: evaluated song.strudel"] * 2
+    assert reports[2].startswith("nanodirt: song.strudel: ")
+
+
+def test_play_file_waits_for_a_save_to_finish(tmp_path: Path) -> None:
+    """A file still being written (truncated, partly written) is not evaluated."""
+    song = tmp_path / "song.strudel"
+    song.write_text('s("hh")')
+    reports: list[str] = []
+    sched = Scheduler(Strudel, lambda c, t: None)
+    stop = threading.Event()
+    thread = threading.Thread(target=play_file, args=(song, sched, stop, reports.append, 0.05))
+    try:
+        thread.start()
+        time.sleep(0.2)
+        assert reports == ["nanodirt: evaluated song.strudel"]
+        code = 's("bd*4")'
+        for i in range(60):  # changes every 5 ms, faster than a poll
+            song.write_text(code[: i % len(code) + 1] if i % 2 else "x" * (i + 2))
+            time.sleep(0.005)
+        assert reports == ["nanodirt: evaluated song.strudel"]
+        song.write_text(code)
+        time.sleep(0.3)
+    finally:
+        stop.set()
+        thread.join(5)
+        sched.stop()
+    assert reports == ["nanodirt: evaluated song.strudel"] * 2
 
 
 # -- offline rendering ----------------------------------------------------------

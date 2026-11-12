@@ -1338,8 +1338,9 @@ def sossnare(n: int) -> SynthDef:
     )  # fmt: skip
 
 
+# Not pmsin: its MouseX/MouseY need UIUGens, which nanosynth does not ship; scsynth rejects it.
 DEFAULT_INSTRUMENTS: list[Callable[[int], SynthDef]] = [
-    imp, psin, pmsin, lambda n: sound_in(n, True), lambda n: sound_in(n, False), dirt_from, inr, gabor, dirac,
+    imp, psin, lambda n: sound_in(n, True), lambda n: sound_in(n, False), dirt_from, inr, gabor, dirac,
     cyclo, debug,
 ]  # fmt: skip
 EXTRA_INSTRUMENTS: list[Callable[[int], SynthDef]] = [
