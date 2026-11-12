@@ -32,12 +32,24 @@ Read from the INFO chunk of each original file in `surikov/webaudiofontdata/sf2/
 
 JCLive's comment is Korean (CP949) in the file. 122 of 125 instruments have a FluidR3 or GeneralUser GS preset; `gm_fretless_bass`, `gm_bagpipe` and `gm_tinkle_bell` have none.
 
-## Plan
+## Implementation
 
-- Fetch presets on demand into `~/.cache/nanodirt`, from the URL Strudel uses, as for the Strudel sample maps. Every `n` then sounds as on strudel.cc. nanodirt redistributes nothing; the user takes JCLive's terms, as on strudel.cc.
+Done 2026-11-12 (`soundfonts.py`, `csrc/_mp3.c`).
 
-- Never ship preset data in the wheel or an sdist. nanodirt would then distribute JCLive's non-commercial and E-MU material.
+- Presets are fetched on demand into `~/.cache/nanodirt/strudel/soundfonts`, from the URL Strudel uses. Every `n` sounds as on strudel.cc; the user takes JCLive's terms, as there. Only the zone a note needs is decoded, to a float WAV beside the preset.
 
-- Optional: a flag (e.g. `--free-soundfonts`) that remaps each instrument to its FluidR3 or GeneralUser GS presets. This changes the `n=0` sound for 103 instruments. Bundling those presets requires shipping FluidR3's notice and `COPYING`.
+- No preset data ships in the wheel or the sdist. Tests use synthetic presets (`tests/soundfont_presets.py`) around two 0.3 s tones nanodirt encoded itself.
 
-- Decoding needs MP3, which nanosynth's libsndfile lacks (nanosynth `TODO.md`). Options: ffmpeg, as for the `piano` map; an MP3 decoder vendored in nanodirt (e.g. minimp3), writing WAV to the cache; or MPEG enabled in nanosynth's libsndfile (mpg123), which lets scsynth read MP3 files itself. The presets hold MP3 in memory, so they need decoding in nanodirt unless written out as `.mp3` files first.
+- A preset is parsed as data: objects, arrays, numbers, strings and booleans. Anything else rejects the file, which is then neither cached nor retried.
+
+- MP3 decodes with minimp3 (`thirdparty/minimp3`, CC0, pinned at `ea99364`), over ffmpeg, which many users lack, and over MPEG in nanosynth's libsndfile, which needs mpg123 and lame vendored. minimp3 trims the encoder delay and padding recorded in the LAME tag; its output equals ffmpeg's within 1.2e-6.
+
+- Not done: `vib` and the pitch envelope (`gaps.md`); a flag remapping each instrument to its FluidR3 or GeneralUser GS presets. The remap would change the `n=0` sound for 103 instruments, and bundling those presets requires FluidR3's notice and `COPYING`.
+
+## Differences from superdough
+
+Checked against the superdough oracle with Strudel's own `fontloader.mjs` (`tests/test_dough.py`, `test_soundfont_matches_sample_by_sample`): loops, transposition, tuning, stereo zones, loop points at another sample rate, envelopes and filters match within 0.3% of the peak.
+
+- `getBuffer` copies the decoded base64 into an `ArrayBuffer` sized by the base64 string, 4/3 of the MP3. Chrome's decoder then keeps LAME's end padding: 13871 frames, not 13230, for the test tone. After a zone that does not loop, superdough plays that padding, up to about 1680 frames (38 ms at 44.1 kHz) of encoder output; nanodirt stops at the encoded length.
+
+- The first note of each zone is silent while nanodirt fetches, parses and decodes it, even when the preset is cached on disk. superdough awaits the load and skips the note only if it is then late.

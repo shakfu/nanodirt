@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from .library import Sample
+from .soundfonts import Soundfonts, write_wav
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,7 @@ class StrudelSamples:
         self._queue: queue.Queue[str] = queue.Queue()
         self._lock = threading.Lock()
         self._worker: threading.Thread | None = None
+        self.soundfonts = Soundfonts(cache / "soundfonts", fetch, blocking)
 
     # -- maps
 
@@ -255,6 +257,16 @@ class StrudelSamples:
             tmp.replace(target)
             return
         # nanosynth's libsndfile is built without MP3, Ogg and FLAC.
+        if source_ext == "mp3":
+            from ._mp3 import decode
+
+            try:
+                pcm, channels, rate = decode(data)
+            except ValueError as exc:
+                logger.warning("cannot decode %s: %s", url, exc)
+                return
+            write_wav(target, pcm, channels, rate)
+            return
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg is None:
             logger.warning("%s needs ffmpeg to transcode .%s", url, source_ext)

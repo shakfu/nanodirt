@@ -1,4 +1,4 @@
-"""Build ``nanodirt._quickjs``: quickjs-ng (thirdparty/quickjs-ng) with the binding in csrc/."""
+"""Build ``nanodirt._quickjs`` (thirdparty/quickjs-ng) and ``nanodirt._mp3`` (thirdparty/minimp3)."""
 
 import sys
 import sysconfig
@@ -32,7 +32,14 @@ setup(
             include_dirs=[QJS],
             extra_compile_args=args,
             py_limited_api=_stable_abi,
-        )
+        ),
+        Extension(
+            "nanodirt._mp3",
+            sources=["csrc/_mp3.c"],
+            include_dirs=["thirdparty/minimp3"],
+            extra_compile_args=args,
+            py_limited_api=_stable_abi,
+        ),
     ],
     options={"bdist_wheel": {"py_limited_api": "cp310"}} if _stable_abi else {},
 )

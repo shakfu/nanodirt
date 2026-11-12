@@ -1,6 +1,6 @@
 # Gaps
 
-Where nanodirt plays differently from strudel.cc, or from Tidal with stock SuperDirt. As of 2026-11-11. Usage figures are repo-weighted shares from `strudel-usage.md`. Status and priorities are in nanosynth `TODO.md`, section "Dirt-protocol backend". Gaps in nanosynth itself: nanosynth `docs/dev/gaps.md`. rustel, a native Strudel port, names most of the Strudel gaps in its source: `rustel.md`.
+Where nanodirt plays differently from strudel.cc, or from Tidal with stock SuperDirt. As of 2026-11-12. Usage figures are repo-weighted shares from `strudel-usage.md`. Status and priorities are in nanosynth `TODO.md`, section "Dirt-protocol backend". Gaps in nanosynth itself: nanosynth `docs/dev/gaps.md`. rustel, a native Strudel port, names most of the Strudel gaps in its source: `rustel.md`.
 
 ## Strudel
 
@@ -10,7 +10,6 @@ Reference: superdough at Strudel `a3302cf` (`superdough-mapping.md`).
 
 | Gap | Use |
 |-|-|
-| `gm_` soundfonts | 28% (22-35%). Plan: `soundfonts.md` |
 | `wt_` wavetables | 3% (1-6%) |
 | Maps loaded in code with `samples('github:...')` | Not measured |
 

@@ -43,5 +43,10 @@ window.render = async (events, seconds, sampleRate, seed = 1) => {
 };
 // Register files served next to this page as a sample bank: {name: [path, ...]}.
 window.addSamples = (map) => sd.samples(map, location.origin + '/');
+// Register the gm_ soundfonts, fetching presets from files served under `dir`.
+window.useSoundfonts = (dir) => {
+  sd.setSoundfontUrl(location.origin + '/' + dir);
+  sd.registerSoundfonts();
+};
 window.ready = true;
 </script>

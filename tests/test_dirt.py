@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import socket
 import struct
 import time
@@ -219,6 +220,26 @@ class TestStrudel:
         sample, root = remote.get("tr909_bd", 1, None)  # type: ignore[misc]
         assert sample.path == path and root is None
         assert remote.get("tr909_bd", 0, None) is None  # not downloaded
+
+    def test_mp3_decodes_without_ffmpeg(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from nanodirt.strudel import StrudelSamples
+
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        served = tmp_path / "served"
+        served.mkdir()
+        fixtures = Path(__file__).parent / "fixtures"
+        (served / "tone.mp3").write_bytes((fixtures / "tone_stereo.mp3").read_bytes())
+        (served / "bad.mp3").write_bytes(b"not mp3")
+        remote = StrudelSamples(tmp_path / "cache", blocking=True)
+        remote.load_map({"_base": served.as_uri() + "/", "tone": ["tone.mp3", "bad.mp3"]})
+        sample, _ = remote.get("tone", 0, None)  # type: ignore[misc]
+        header = read_header(sample.path)
+        assert header is not None and (header.frames, header.channels) == (13230, 2)
+        with caplog.at_level(logging.WARNING):
+            assert remote.get("tone", 1, None) is None
+        assert "cannot decode" in caplog.text
 
     def test_pitched_bank_picks_nearest_note(self, tmp_path: Path, samples: Path) -> None:
         from nanodirt.strudel import StrudelSamples

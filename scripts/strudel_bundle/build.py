@@ -4,7 +4,8 @@ usage: python scripts/strudel_bundle/build.py
 
 Clones Strudel at `REVISION` into the cache (the checkout the superdough oracle
 uses), installs the bundler, bundles the pattern packages with `harness.mjs`
-into `src/nanodirt/js/strudel.js` with its third-party licences in `LICENSES/`, and records Node's events for Strudel's tunes
+into `src/nanodirt/js/strudel.js` with its third-party licences in `LICENSES/`, writes the `gm_`
+soundfont map to `src/nanodirt/js/gm.json`, and records Node's events for Strudel's tunes
 in `tests/fixtures/strudel_tunes.json`. Needs git and Node. Strudel and the
 bundle are AGPL-3.0-or-later; this directory is the bundle's source.
 """
@@ -24,6 +25,14 @@ STRUDEL = CACHE / "superdough" / "strudel"
 BUNDLE = ROOT / "src" / "nanodirt" / "js" / "strudel.js"
 FIXTURE = ROOT / "tests" / "fixtures" / "strudel_tunes.json"
 NOTICES = ROOT / "LICENSES" / "strudel-bundle-third-party.txt"
+GM = ROOT / "src" / "nanodirt" / "js" / "gm.json"
+GM_SOURCE = STRUDEL / "packages" / "soundfonts" / "gm.mjs"
+# gm.mjs's default export: instrument name -> preset names, as JSON.
+GM_SCRIPT = (
+    "const { pathToFileURL } = await import('node:url');"
+    "const gm = (await import(pathToFileURL(process.argv[1]))).default;"
+    "process.stdout.write(JSON.stringify(gm, null, 1) + '\\n');"
+)
 CYCLES = 4
 
 
@@ -44,6 +53,13 @@ def main() -> None:
         f"/* Strudel {REVISION} ({REPO}), built by scripts/strudel_bundle. AGPL-3.0-or-later. */\n"
     )
     BUNDLE.write_text(header + BUNDLE.read_text(encoding="utf-8"), encoding="utf-8")
+    gm = subprocess.run(
+        ["node", "--input-type=module", "-e", GM_SCRIPT, str(GM_SOURCE)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    GM.write_text(gm.stdout, encoding="utf-8")
     subprocess.run(
         ["node", "node_events.mjs", str(STRUDEL), str(BUNDLE), str(FIXTURE), str(CYCLES)],
         cwd=HERE,

@@ -16,7 +16,7 @@ nanodirt replaces SuperCollider + SuperDirt for users of TidalCycles, Strudel an
 | `docs/dev/strudel-headless.md` | Scope: Strudel code in-process via a QuickJS wrapper in nanosynth |
 | `docs/dev/spike-results.md` | What the spike proved, measured timings, findings |
 | `docs/dev/strudel-usage.md` | Which superdough sources and controls Strudel code uses; scope for M5 |
-| `docs/dev/soundfonts.md` | `gm_` soundfonts: data source, licences, plan |
+| `docs/dev/soundfonts.md` | `gm_` soundfonts: data source, licences, implementation, differences |
 | `docs/dev/gaps.md` | Where nanodirt differs from strudel.cc and stock SuperDirt |
 | `docs/dev/rustel.md` | Comparison with rustel, a native Strudel port |
 | nanosynth `docs/dev/roadmap.md` | Requirements, milestones and status across both packages |
@@ -46,6 +46,7 @@ nanodirt replaces SuperCollider + SuperDirt for users of TidalCycles, Strudel an
 | M3 | `nanodirt.vortex.boot`, `nanodirt vortex [--cli]` | `tests/test_vortex.py`: headless playback through `vortex_dsl()`; vortex.stream and pyliblo3 not imported; public-name check against vortex's own `boot.py` |
 | M4 | 25 core and global SynthDefs, 43 instruments, 20 extra effect modules | `tests/test_synthdef_parity.py`, `test_instrument_parity.py`, `test_effect_parity.py`: rendered against sclang's compiled SynthDefs (`tests/fixtures/superdirt_defs/`), 1e-4 tolerance, or by level for graphs with random draws |
 | M5 (part) | superdough synth sources on the Strudel path (`dough.py`, `Dirt.play_strudel`); superdough oracle | `tests/test_dough.py`: rules, offline level; with `NANODIRT_TEST_SUPERDOUGH=1`, rendered against superdough |
+| Soundfonts | `gm_` soundfonts (`soundfonts.py`), fetched on demand; MP3 decoding with vendored minimp3 (`nanodirt._mp3`) | `tests/test_soundfonts.py`: decoding, preset parsing, loading, voice rules; with `NANODIRT_TEST_SUPERDOUGH=1`, `tests/test_dough.py` renders against superdough's `fontloader.mjs` |
 
 Behaviour found by the oracle and reproduced:
 

@@ -244,4 +244,4 @@ Comparison:
 
 3. Controls by usage: filter envelope, FM, ducking, pitch envelope, `vib`, `compressor`, `supersaw` `unison`.
 
-4. `gm_` soundfonts. Licences checked 2026-11-11: fetch on demand, never bundle (`soundfonts.md`).
+4. `gm_` soundfonts. Licences checked 2026-11-11: fetch on demand, never bundle. Done 2026-11-12: matches superdough within 0.3% of the peak, sample by sample, up to the MP3's end padding (`soundfonts.md`). The sample voice's `loop` now plays to the loop end before wrapping, checked against superdough on the same date.

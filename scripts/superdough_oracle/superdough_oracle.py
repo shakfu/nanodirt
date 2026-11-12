@@ -95,6 +95,10 @@ class Superdough:
         """Register files under ``WWW`` as superdough sample banks, by path relative to it."""
         self._page.evaluate("(m) => window.addSamples(m)", banks)
 
+    def use_soundfonts(self, directory: str) -> None:
+        """Register the ``gm_`` soundfonts, with presets from files under ``WWW / directory``."""
+        self._page.evaluate("(d) => window.useSoundfonts(d)", directory)
+
     def render(
         self, events: list[Event], seconds: float, rate: int = 48000, seed: int = 1
     ) -> list[tuple[float, float]]:

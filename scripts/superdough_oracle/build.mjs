@@ -33,9 +33,19 @@ const worklet = {
     }));
   },
 };
+// superdough plus the soundfont player, which imports superdough as @strudel/webaudio:
+// aliased to the same file, so both share one sound registry and audio context.
 await esbuild.build({
   ...common,
-  entryPoints: [path.join(sd, 'index.mjs')],
+  stdin: {
+    contents: `export * from './index.mjs';
+export { registerSoundfonts, setSoundfontUrl } from '../soundfonts/fontloader.mjs';`,
+    resolveDir: sd,
+  },
+  alias: {
+    '@strudel/webaudio': path.join(sd, 'index.mjs'),
+    '@strudel/core': path.join(root, 'packages/core/util.mjs'), // noteToMidi, freqToMidi, getSoundIndex
+  },
   outfile: path.join(out, 'superdough.js'),
   plugins: [worklet],
   external: ['@kabelsalat/web'], // live-coding DSP; not used for rendering

@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Strudel's `gm_` soundfonts play, as on strudel.cc, live and in `nanodirt render`. A preset downloads into the cache the first time an event plays it, from the URL Strudel uses, and only the zone a note needs is decoded; until then the note is silent, as superdough skips a note still loading. Presets are parsed as data, not run as JavaScript. They match superdough sample by sample, except that superdough also plays the MP3's end padding, up to 40 ms of encoder output, after a zone that does not loop (`docs/dev/soundfonts.md`). nanodirt ships no soundfont data.
+
+- MP3 decoding without ffmpeg: minimp3 (CC0), vendored as `nanodirt._mp3`. It decodes soundfont zones and MP3 files in sample maps, such as the default `piano` map, which needed ffmpeg. Its output equals ffmpeg's within 1.2e-6, encoder delay and padding removed, as Chrome's `decodeAudioData` does. Ogg and FLAC still need ffmpeg. The package licence adds `CC0-1.0`.
+
+### Fixed
+
+- A looping Strudel sample (`loop`) that starts before `loopBegin`, or plays reversed, skipped straight into the loop: `Phasor` wraps a start outside its range at once. It now plays to the loop end first, as Web Audio does, and matches superdough sample by sample.
+
 ## [0.3.0]
 
 ### Added

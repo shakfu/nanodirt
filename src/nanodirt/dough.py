@@ -19,19 +19,16 @@ from nanosynth.synthdef import SynthDef, SynthDefBuilder, control
 from nanosynth.ugens import (
     DC,
     SOS,
-    BufRateScale,
     BufRd,
     BufSampleRate,
     Delay1,
     Delay2,
     Dust2,
-    Impulse,
     In,
     LFTri,
     OffsetOut,
     OnePole,
     Out,
-    Phasor,
     Pulse,
     ReplaceOut,
     SampleRate,
@@ -43,6 +40,7 @@ from nanosynth.ugens import (
 )
 
 from .library import Sample
+from .soundfonts import GM, Zone
 from .strudel import note_to_midi
 
 OSCILLATORS = {
@@ -61,6 +59,10 @@ WAVE_LEVEL = {"triangle": 1.0, "square": 1.69, "sawtooth": 1.69}
 
 # (name, index, midi) -> (sample, root note of a pitched bank or None)
 FindSample = Callable[[str, int, float], "tuple[Sample, float | None] | None"]
+# (gm_ instrument, preset index, midi) -> (decoded zone, zone), None until loaded
+FindFont = Callable[[str, int, float], "tuple[Sample, Zone] | None"]
+FONT_LEVEL = 0.3  # fontloader.mjs: getParamADSR(node.gain, ..., 0, 0.3, ...)
+FONT_NOTE = 48  # fontloader.mjs: note = 'c3'
 
 
 @dataclass
@@ -150,12 +152,15 @@ def _number(x: Any) -> float | None:
 
 
 def _envelope(
-    e: Mapping[str, Any], defaults: tuple[float, float, float, float], duration: float
+    e: Mapping[str, Any],
+    defaults: tuple[float, float, float, float],
+    duration: float,
+    peak: float = 1.0,
 ) -> tuple[dict[str, float], float]:
     adsr = adsr_values(
         tuple(_number(e.get(k)) for k in ("attack", "decay", "sustain", "release")), defaults
     )
-    levels, times = envelope_points(adsr, duration)
+    levels, times = envelope_points(adsr, duration, 0.0, peak)
     controls = {f"l{i + 1}": v for i, v in enumerate(levels)}
     controls |= {f"t{i + 1}": v for i, v in enumerate(times)}
     return controls, duration + adsr[3] + 0.01  # the source stops at end + release + 0.01
@@ -231,7 +236,10 @@ def filters(e: Mapping[str, Any], duration: float) -> list[tuple[str, dict[str, 
 
 
 def voice(
-    e: Mapping[str, Any], num_channels: int, find_sample: FindSample | None = None
+    e: Mapping[str, Any],
+    num_channels: int,
+    find_sample: FindSample | None = None,
+    find_font: FindFont | None = None,
 ) -> Voice | None:
     """superdough's voice for a Strudel event, or None if superdough has no such sound."""
     s = e.get("s")
@@ -246,6 +254,8 @@ def voice(
         if name == "crackle":
             controls["density"] = _number(e.get("density")) or CRACKLE_DENSITY
         return Voice(f"dough_{name}", controls, 1, _gate(e, life), filters=filters(e, duration))
+    if find_font is not None and name in GM:
+        return _font_voice(e, name, duration, find_font)
     if find_sample is None:
         return None
     return _sample_voice(e, name, duration, find_sample)
@@ -319,6 +329,41 @@ def _sample_voice(
     )
 
 
+def _font_voice(e: Mapping[str, Any], name: str, duration: float, find: FindFont) -> Voice:
+    """``registerSoundfonts`` and ``getFontBufferSource`` (fontloader.mjs).
+
+    Silent until the zone is loaded. ``vib`` and the pitch envelope are not implemented.
+    """
+    target = midi(e, FONT_NOTE)
+    n = _number(e.get("n")) or 0.0
+    found = find(name, math.floor(n + 0.5), target)  # getSoundIndex
+    if found is None:
+        return SILENT
+    sample, zone = found
+    header = sample.header
+    if header is None or header.channels > 2:
+        return SILENT
+    env, life = _envelope(e, SAMPLE_ENVELOPE, duration, FONT_LEVEL)
+    scale = header.sample_rate / zone.sample_rate  # loop points are in the zone's frames
+    controls = {
+        "rate": zone.playback_rate(target),
+        "start": 0.0,
+        "loop": float(zone.loops),
+        "loopStart": zone.loop_start * scale,
+        "loopEnd": zone.loop_end * scale,
+        "frames": header.frames,
+        **env,
+    }
+    return Voice(
+        f"dough_sample{header.channels}",
+        controls,
+        header.channels,
+        _gate(e, life),
+        sample=sample,
+        filters=filters(e, duration),
+    )
+
+
 # -- SynthDefs --------------------------------------------------------------------------
 
 
@@ -371,22 +416,24 @@ def _env(b: SynthDefBuilder) -> Any:
 
 
 def _sample(channels: int) -> SynthDef:
-    """An ``AudioBufferSourceNode``: linear interpolation, silent outside the buffer."""
+    """An ``AudioBufferSourceNode``: linear interpolation, silent outside the buffer.
+
+    A looping source plays from ``start`` to the loop end before it wraps, as Web Audio does;
+    a negative rate plays the buffer backwards with mirrored loop points.
+    """
     controls = {
         "out": control(0, "ir"), "buf": control(0, "ir"), "rate": control(1.0, "ir"),
         "start": control(0.0, "ir"), "loop": control(0.0, "ir"), "loopStart": control(0.0, "ir"),
         "loopEnd": control(0.0, "ir"), "frames": control(1.0, "ir"), **_envelope_controls(),
     }  # fmt: skip
     with SynthDefBuilder(**controls) as b:
-        straight = b["start"] + Sweep.ar(rate=b["rate"] * BufSampleRate.ir(buffer_id=b["buf"]))
-        looped = Phasor.ar(
-            trigger=Impulse.ar(frequency=0),
-            rate=b["rate"] * BufRateScale.ir(buffer_id=b["buf"]),
-            start=b["loopStart"],
-            stop=b["loopEnd"],
-            reset_pos=b["start"],
-        )
-        phase = Select.ar(selector=b["loop"], sources=[straight, looped])
+        # u: the position in the direction of play, increasing from sign(rate) * start
+        sign = b["rate"].sign()
+        u = b["start"] * sign + Sweep.ar(rate=abs(b["rate"]) * BufSampleRate.ir(buffer_id=b["buf"]))
+        lo = (b["loopStart"] * sign).min_(b["loopEnd"] * sign)
+        hi = (b["loopStart"] * sign).max_(b["loopEnd"] * sign)
+        wrapped = lo + (u - lo) % (hi - lo)
+        phase = Select.ar(selector=(u >= hi) * b["loop"], sources=[u, wrapped]) * sign
         inside = ((phase >= 0) * (phase <= b["frames"] - 1)).max_(b["loop"])
         sig = BufRd.ar(
             channel_count=channels, buffer_id=b["buf"], phase=phase, loop=0, interpolation=2

@@ -14,8 +14,8 @@ rustel replaces Strudel's browser runtime: a Rust pattern engine, QuickJS for sc
 | DSP | rustel's own Rust code | scsynth; SynthDefs translated from SuperDirt and superdough |
 | Sound target | strudel.cc, Firefox as reference | superdough in headless Chrome (Strudel); stock SuperDirt (Tidal) |
 | Parity tests | Goldens against rustel's own earlier output; browser comparison done separately by maintainers (`CONTRIBUTING.md`, "What the goldens prove") | Automated against the superdough oracle and stock SuperDirt, often sample by sample |
-| `gm_` soundfonts | Fetched from the same `webaudiofontdata` URL | Not yet (`soundfonts.md`) |
-| MP3 | symphonia (pure Rust) | ffmpeg |
+| `gm_` soundfonts | Fetched from the same `webaudiofontdata` URL | The same (`soundfonts.md`) |
+| MP3 | symphonia (pure Rust) | minimp3 (C, vendored) |
 | Extras | VST3, Csound, Hydra, scope and piano roll, MIDI, OSC, serial, Ableton Link, WAV/MP3 export, session tapes | MIDI and NRT rendering (nanosynth) |
 | Licence | AGPL-3.0-or-later | GPL-3.0-or-later (nanodirt), MIT (nanosynth) |
 | Distribution | `rustelup` installer; crates not on crates.io | PyPI |
@@ -77,4 +77,4 @@ Decided 2026-11-11: nanodirt implements headless Strudel, QuickJS included (`str
 
 - Licence for reuse. nanodirt (GPL-3) can combine with AGPL-3 code, but the result carries AGPL's network-use terms. nanosynth (MIT) cannot take rustel code. Facts are free to use either way, such as the corrected bass filenames in `crates/runtime/assets/gm-fonts.json`.
 
-- rustel also fetches soundfonts on demand and decodes MP3 natively, as `soundfonts.md` plans.
+- rustel also fetches soundfonts on demand and decodes MP3 natively, as nanodirt does.

@@ -402,7 +402,7 @@ class Dirt:
         from .dough import SILENT, voice
         from .strudel import normalize
 
-        v = voice(params, self.num_channels, self._find_sample)
+        v = voice(params, self.num_channels, self._find_sample, self._find_font)
         if v is None:
             return self.play(normalize(dict(params)), timestamp)
         when = self._schedule(timestamp)
@@ -570,6 +570,15 @@ class Dirt:
         if self.remote is None:
             return None
         found = self.remote.get(name, index, midi)
+        if found is None:
+            return None
+        self.library._ensure_loaded(found[0])
+        return found if found[0].header is not None else None
+
+    def _find_font(self, name: str, index: int, midi: float) -> tuple[Sample, Any] | None:
+        """A ``gm_`` soundfont zone, from the Strudel samples' soundfonts."""
+        fonts = getattr(self.remote, "soundfonts", None)
+        found = fonts.get(name, index, midi) if fonts is not None else None
         if found is None:
             return None
         self.library._ensure_loaded(found[0])

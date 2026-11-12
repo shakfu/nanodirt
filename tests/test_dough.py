@@ -22,9 +22,11 @@ from nanosynth.osc import OscMessage
 from nanosynth.score import Score
 from nanosynth.scsynth import Options
 from parity import _helper_defs, write_test_wav
+from soundfont_presets import write_presets
 
 from nanodirt import dough, dough_orbit
 from nanodirt.library import Sample, read_header
+from nanodirt.soundfonts import Soundfonts, Zone
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "superdough_oracle"))
 import superdough_oracle  # noqa: E402
@@ -59,7 +61,10 @@ def banks(tmp_path_factory: pytest.TempPathFactory) -> dict[str, list[Path]]:
 
 
 def nrt(
-    event: dict[str, Any], seconds: float, banks: dict[str, list[Path]] | None = None
+    event: dict[str, Any],
+    seconds: float,
+    banks: dict[str, list[Path]] | None = None,
+    fonts: Soundfonts | None = None,
 ) -> Frames:
     """nanodirt's voice for *event*, rendered offline: source and gate in one group."""
     samples: dict[Path, int] = {}
@@ -72,7 +77,16 @@ def nrt(
         buf = samples.setdefault(path, len(samples))
         return Sample(path, read_header(path), buf), None
 
-    v = dough.voice(event, NUM_CHANNELS, find)
+    def find_font(name: str, index: int, midi: float) -> tuple[Sample, Zone] | None:
+        found = fonts.get(name, index, midi) if fonts is not None else None
+        if found is None:
+            return None
+        sample, zone = found
+        return Sample(
+            sample.path, sample.header, samples.setdefault(sample.path, len(samples))
+        ), zone
+
+    v = dough.voice(event, NUM_CHANNELS, find, find_font)
     assert v is not None and v is not dough.SILENT
     score = Score()
     for d in DEFS.values():
@@ -245,8 +259,10 @@ def sd(banks: dict[str, list[Path]]) -> Iterator[Any]:
     for paths in banks.values():
         for p in paths:
             shutil.copy(p, served / p.name)
+    write_presets(superdough_oracle.WWW / "nanodirt-sf")
     with superdough_oracle.Superdough() as s:
         s.add_samples({name: [f"nanodirt-test/{p.name}" for p in ps] for name, ps in banks.items()})
+        s.use_soundfonts("nanodirt-sf")
         yield s
 
 
@@ -289,6 +305,10 @@ SAMPLES: list[dict[str, Any]] = [
     {"s": "stereo"},
     {"s": "stereo", "pan": 0.2},
     {"s": "stereo", "n": 1, "pan": 0.85, "postgain": 0.5},
+    # loops: play from begin to the loop end, then wrap, as Web Audio does
+    {"s": "mono", "loop": 1, "loopBegin": 0.25, "loopEnd": 0.75},
+    {"s": "mono", "loop": 1, "begin": 0.1, "loopBegin": 0.4, "loopEnd": 0.6, "speed": 1.3},
+    {"s": "mono", "loop": 1, "loopBegin": 0.2, "loopEnd": 0.7, "speed": -1},
 ]
 
 
@@ -437,3 +457,39 @@ def test_reverb_energy_and_decay(sd: Any, banks: dict[str, list[Path]], size: fl
         ref_curve,
         got_curve,
     )
+
+
+@pytest.fixture(scope="module")
+def fonts(tmp_path_factory: pytest.TempPathFactory) -> Soundfonts:
+    served = write_presets(tmp_path_factory.mktemp("presets"))
+    return Soundfonts(tmp_path_factory.mktemp("fonts"), blocking=True, url=served.as_uri())
+
+
+FONTS: list[dict[str, Any]] = [
+    {"s": "gm_piano", "note": 57},  # rate 1, held past the buffer: loops
+    {"s": "gm_piano"},  # c3 by default: transposed down
+    {"s": "gm_piano", "note": "f#2", "attack": 0.05, "release": 0.1},
+    {"s": "gm_piano", "note": 58.5, "gain": 0.6, "pan": 0.3},  # fractional key
+    {"s": "gm_piano", "note": 64},  # stereo zone, tuned, no loop
+    {"s": "gm_piano", "note": 84, "pan": 0.8},  # faster than the buffer lasts
+    # Loop points at another sample rate. Not 330 Hz: rate 1.5 lands exactly on the loop end,
+    # which Chrome's double-precision loop end, 3000 / 22050 * 44100, passes by 1e-12.
+    {"s": "gm_piano", "n": 1, "freq": 325},
+    {"s": "gm_piano", "note": 57, "cutoff": 800, "resonance": 4},
+]
+
+
+@oracle
+@pytest.mark.parametrize("value", FONTS, ids=lambda e: ",".join(f"{k}={v}" for k, v in e.items()))
+def test_soundfont_matches_sample_by_sample(
+    sd: Any, fonts: Soundfonts, value: dict[str, Any]
+) -> None:
+    ref = reference(sd, value, 0.6, 0.9)
+    got = nrt({**value, "delta": 0.6}, 0.9, fonts=fonts)
+    assert max(abs(left) for left, _ in ref) > 0.02, "silent reference"
+    v = dough.voice({**value, "delta": 0.6}, NUM_CHANNELS, None, fonts.get)
+    assert v is not None and v.sample is not None and v.sample.header is not None
+    # fontloader decodes the MP3 from a buffer sized by its base64 length, so Chrome keeps
+    # LAME's end padding (641 frames here, -43 dB) after a zone that does not loop.
+    end = len(ref) if v.controls["loop"] else int(v.sample.header.frames / v.controls["rate"])
+    assert matches(ref, got, skip=(end, len(ref)))
