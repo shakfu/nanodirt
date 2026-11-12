@@ -3,7 +3,7 @@ name = "nanodirt"
 version = "0.2.0"
 description = "SuperDirt's event model on nanosynth: a Dirt backend for TidalCycles, Strudel and vortex"
 readme = "README.md"
-license = "GPL-3.0-or-later AND AGPL-3.0-or-later AND MIT"
+license = "GPL-3.0-or-later AND AGPL-3.0-or-later AND MIT AND BSD-2-Clause AND BSD-3-Clause AND ISC"
 license-files = ["LICENSE", "LICENSES/*"]
 authors = [{ name = "Shakeeb Alireza", email = "shakfu@users.noreply.github.com" }]
 requires-python = ">=3.10"

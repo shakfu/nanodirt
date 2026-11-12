@@ -21,4 +21,4 @@ nanodirt render song.strudel --cycles 8   # Strudel code to WAV, without a brows
 
 SynthDefs, modules and instruments are translated from SuperDirt `650a1d6` and checked against it; see `docs/dev/status.md`.
 
-GPL-3.0-or-later. The bundled Strudel (`src/nanodirt/js/strudel.js`, built by `scripts/strudel_bundle/`) is AGPL-3.0-or-later; QuickJS and its binding are MIT. Texts in `LICENSES/`.
+GPL-3.0-or-later. The bundled Strudel (`src/nanodirt/js/strudel.js`, built by `scripts/strudel_bundle/`) is AGPL-3.0-or-later; it includes MIT, BSD and ISC npm packages (`LICENSES/strudel-bundle-third-party.txt`). QuickJS and its binding are MIT. Texts in `LICENSES/`.

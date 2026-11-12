@@ -2,6 +2,11 @@ include setup.py
 recursive-include csrc *.c LICENSE
 recursive-include thirdparty/quickjs-ng *.c *.h LICENSE
 recursive-include LICENSES *
-recursive-include scripts/strudel_bundle *.mjs *.json *.py
+recursive-include scripts/strudel_bundle *.mjs *.js *.json *.py
+recursive-include scripts/superdough_oracle *.mjs *.json *.py *.html
+recursive-include tests *.py
+recursive-include tests/fixtures *
 prune spike
 prune scripts/strudel_bundle/node_modules
+prune scripts/superdough_oracle/node_modules
+global-exclude __pycache__ *.pyc

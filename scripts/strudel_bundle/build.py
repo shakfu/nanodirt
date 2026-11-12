@@ -4,7 +4,7 @@ usage: python scripts/strudel_bundle/build.py
 
 Clones Strudel at `REVISION` into the cache (the checkout the superdough oracle
 uses), installs the bundler, bundles the pattern packages with `harness.mjs`
-into `src/nanodirt/js/strudel.js`, and records Node's events for Strudel's tunes
+into `src/nanodirt/js/strudel.js` with its third-party licences in `LICENSES/`, and records Node's events for Strudel's tunes
 in `tests/fixtures/strudel_tunes.json`. Needs git and Node. Strudel and the
 bundle are AGPL-3.0-or-later; this directory is the bundle's source.
 """
@@ -23,6 +23,7 @@ CACHE = Path(os.environ.get("NANODIRT_CACHE", Path.home() / ".cache" / "nanodirt
 STRUDEL = CACHE / "superdough" / "strudel"
 BUNDLE = ROOT / "src" / "nanodirt" / "js" / "strudel.js"
 FIXTURE = ROOT / "tests" / "fixtures" / "strudel_tunes.json"
+NOTICES = ROOT / "LICENSES" / "strudel-bundle-third-party.txt"
 CYCLES = 4
 
 
@@ -36,7 +37,9 @@ def main() -> None:
         ["npm", "install", "--no-audit", "--no-fund", "--ignore-scripts"], cwd=HERE, check=True
     )
     BUNDLE.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["node", "build.mjs", str(STRUDEL), str(BUNDLE)], cwd=HERE, check=True)
+    subprocess.run(
+        ["node", "build.mjs", str(STRUDEL), str(BUNDLE), str(NOTICES)], cwd=HERE, check=True
+    )
     header = f"/* Strudel {REVISION} ({REPO}), built by scripts/strudel_bundle. AGPL-3.0-or-later. */\n"
     BUNDLE.write_text(header + BUNDLE.read_text())
     subprocess.run(

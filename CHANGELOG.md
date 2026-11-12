@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- nanodirt is now a compiled package: it vendors quickjs-ng 0.18.0 and genotrance's MIT binding, built with setuptools as one stable-ABI wheel per platform. The binding's time limit counts the evaluating thread's CPU time, not the process's, which includes the engine's audio thread. A context can be shared between threads: upstream crashed when two threads used one, and raised a false `StackOverflow` because QuickJS checked one thread's stack against another's. A JS call made from inside a Python callback no longer clears the outer call's time limit. The package licence is `GPL-3.0-or-later AND AGPL-3.0-or-later AND MIT`: it ships the AGPL Strudel bundle.
+- nanodirt is now a compiled package: it vendors quickjs-ng 0.18.0 and genotrance's MIT binding, built with setuptools as one stable-ABI wheel per platform. The binding's time limit counts the evaluating thread's CPU time, not the process's, which includes the engine's audio thread. A context can be shared between threads: upstream crashed when two threads used one, and raised a false `StackOverflow` because QuickJS checked one thread's stack against another's. A JS call made from inside a Python callback no longer clears the outer call's time limit. The package licence is `GPL-3.0-or-later AND AGPL-3.0-or-later AND MIT AND BSD-2-Clause AND BSD-3-Clause AND ISC`: it ships the AGPL Strudel bundle, which includes 40 MIT, BSD and ISC npm packages. Their notices are in `LICENSES/strudel-bundle-third-party.txt`, which the bundle build writes from what esbuild includes. The sdist carries the bundle's build scripts and the test suite with its fixtures.
 
 ### Fixed
 

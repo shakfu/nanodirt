@@ -63,3 +63,134 @@ jobs:
 
       - name: Test
         run: uv run --no-sources pytest tests/
+
+  # One stable-ABI (abi3) wheel per platform, built on CPython 3.10 and tested there.
+  build-wheels:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            arch: arm64
+          - os: ubuntu-latest
+            arch: x86_64
+
+    runs-on: ${{ matrix.os }}
+    name: wheel (${{ matrix.os }}, ${{ matrix.arch }})
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build and test wheel
+        uses: pypa/cibuildwheel@v4.3.0
+        env:
+          CIBW_ARCHS: ${{ matrix.arch }}
+          CIBW_BUILD: "cp310-*"
+          CIBW_SKIP: "*-musllinux*"
+          CIBW_TEST_REQUIRES: pytest numpy
+          CIBW_TEST_COMMAND: pytest {project}/tests
+          # nanosynth's Linux wheel, a test dependency, links ALSA.
+          CIBW_BEFORE_ALL_LINUX: yum install -y alsa-lib-devel || apt-get install -y libasound2-dev
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v7
+        with:
+          name: wheel-${{ matrix.os }}-${{ matrix.arch }}
+          path: wheelhouse/*.whl
+
+  # The abi3 wheel on the newest CPython: the stable ABI claim, checked.
+  test-wheels:
+    needs: build-wheels
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    runs-on: ${{ matrix.os }}
+    name: wheel on py3.14 (${{ matrix.os }})
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # this platform's wheel only, installed by path: nanodirt's version may also be on PyPI
+      - name: Download wheel
+        uses: actions/download-artifact@v8
+        with:
+          pattern: wheel-${{ matrix.os }}-*
+          path: wheelhouse/
+          merge-multiple: true
+
+      - name: Install ALSA
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with:
+          python-version: "3.14"
+
+      # tests/ imports the installed nanodirt: src/ is not on the path.
+      - name: Install wheel and test
+        run: |
+          uv venv
+          uv pip install wheelhouse/*.whl pytest numpy
+          .venv/bin/python -m pytest tests/
+
+  # The sdist builds and its own tests pass, as a distribution packager would run them.
+  build-sdist:
+    runs-on: ubuntu-latest
+    name: sdist
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install ALSA
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with:
+          python-version: "3.13"
+
+      - name: Build sdist
+        run: uv build --sdist
+
+      - name: Test from the unpacked sdist
+        run: |
+          mkdir /tmp/sdist && tar xzf dist/*.tar.gz -C /tmp/sdist
+          cd /tmp/sdist/nanodirt-*
+          uv venv
+          uv pip install --no-sources . pytest numpy
+          .venv/bin/python -m pytest tests/
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v7
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  dist:
+    needs: [test-wheels, build-sdist]
+    runs-on: ubuntu-latest
+    name: dist (wheels + sdist)
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+
+      - name: Check metadata
+        run: |
+          ls -lh dist/
+          uvx twine check --strict dist/*
+
+      - name: Upload combined artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
