@@ -20,7 +20,7 @@ qa: lint test typecheck format
 build:
 	@rm -rf dist && uv build
 
-check: build
+check:
 	@uv run twine check --strict dist/*
 
 publish: check

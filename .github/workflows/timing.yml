@@ -1,0 +1,49 @@
+# Strudel evaluate and query timings per OS, run by hand (docs/dev/strudel-headless.md, Timing).
+name: Timing
+
+on:
+  workflow_dispatch:
+
+jobs:
+  timing:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+    name: timing (${{ matrix.os }})
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install ALSA
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: uv sync --no-sources
+
+      - name: Time
+        run: |
+          {
+            echo '### ${{ matrix.os }}'
+            echo '```'
+            uv run --no-sources python scripts/strudel_eval_timing.py --json timing-0.json
+            echo
+            uv run --no-sources python scripts/strudel_eval_timing.py --at-cycle 100 --json timing-100.json
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: timing-${{ matrix.os }}
+          path: timing-*.json
