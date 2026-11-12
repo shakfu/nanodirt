@@ -68,7 +68,7 @@ Out of scope: MIDI output, hydra, csound, Kabelsalat, drawing.
 
 | Item | Effort |
 |-|-|
-| `nanodirt._quickjs`: vendor, wrap; switch nanodirt to a compiled build with wheels for macOS arm64 and Linux x86_64 | Medium |
+| `nanodirt._quickjs`: vendor, wrap; switch nanodirt to a compiled build with wheels for macOS arm64, Linux x86_64 and Windows AMD64 | Medium |
 | Bundle from a pinned revision; CI check that QuickJS and Node give the same events for all tunes | Low |
 | Event to OSC fields | Low |
 | Host functions, then the remaining tune failures | Medium |

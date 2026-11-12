@@ -63,7 +63,7 @@ LEAD = 0.3  # how far ahead events are timestamped
 def parse_log(path: Path) -> Sent:
     """Each logged send as (kind, messages, latency in seconds or None)."""
     out: Sent = []
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         kind, latency, _time, rest = line.split(" ", 3)
         msgs = [_parse_message(m) for m in rest.split(" | ")]
         out.append((kind, msgs, None if latency == "nil" else float(latency)))

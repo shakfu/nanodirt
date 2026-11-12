@@ -71,7 +71,7 @@ def main() -> None:
     ap.add_argument("--json", type=Path, help="write per-tune figures here")
     args = ap.parse_args()
 
-    tunes = json.loads(FIXTURE.read_text())
+    tunes = json.loads(FIXTURE.read_text(encoding="utf-8"))
     results: dict[str, dict[str, float]] = {}
     failed: list[str] = []
     for name in sorted(tunes):

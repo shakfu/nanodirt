@@ -128,7 +128,7 @@ def render_file(args: argparse.Namespace) -> int:
     local = [x for x in args.samples if not is_map(x)]
     if not local and DEFAULT_SAMPLES.exists():
         local = [str(DEFAULT_SAMPLES)]
-    code = args.file.read_text()
+    code = args.file.read_text(encoding="utf-8")
     maps = "".join(f"samples({json.dumps(m)});\n" for m in args.samples if is_map(m))
     try:
         n = render(
@@ -270,7 +270,8 @@ def main(argv: list[str] | None = None) -> int:
         stop = threading.Event()
         signal.signal(signal.SIGINT, lambda *_: stop.set())
         signal.signal(signal.SIGTERM, lambda *_: stop.set())
-        stop.wait()
+        while not stop.wait(0.5):  # with a timeout: on Windows Ctrl-C may not end a bare wait
+            pass
     except OSError as exc:
         print(f"nanodirt: {exc}", file=sys.stderr)
         return 1

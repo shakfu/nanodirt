@@ -139,6 +139,16 @@ def test_callback_reenters_the_context() -> None:
     assert ctx.eval("inner() + 1") == 82
 
 
+def test_python_ints_keep_their_value() -> None:
+    """Past int32 an int was truncated (2**40 became 0); past a double it crashed."""
+    ctx = _quickjs.Context()
+    ctx.eval("var same = (x) => x")
+    same = ctx.get("same")
+    for v in (2**31 - 1, -(2**31), 2**31, -(2**31) - 1, 2**40, 2**53):
+        assert same(v) == v
+    assert same(10**400) == math.inf and same(-(10**400)) == -math.inf
+
+
 def test_memory_limit() -> None:
     ctx = _quickjs.Context()
     ctx.set_memory_limit(4 * 1024 * 1024)
@@ -214,7 +224,7 @@ def _close(a: Any, b: Any) -> bool:
     return bool(a == b)
 
 
-TUNES: dict[str, Any] = json.loads(FIXTURE.read_text())
+TUNES: dict[str, Any] = json.loads(FIXTURE.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("name", sorted(TUNES))
@@ -572,6 +582,16 @@ def test_cli_render(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     assert read_wav(song.with_suffix(".wav"))[1]
     song.write_text("s(")
     assert main(["--no-strudel-maps", "render", str(song)]) == 1
+
+
+def test_cli_reads_code_as_utf8(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Windows' locale encoding is not UTF-8; a non-ASCII comment must not garble the code."""
+    song = tmp_path / "song.strudel"
+    song.write_text(
+        '// \u00fcber \u266a \u30c9\nsetcps(2)\nnote("c3*2").s("square")', encoding="utf-8"
+    )
+    assert main(["--no-strudel-maps", "render", str(song), "--cycles", "1", "--tail", "0"]) == 0
+    assert "2 events" in capsys.readouterr().out
 
 
 # -- blocking downloads ---------------------------------------------------------

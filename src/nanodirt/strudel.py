@@ -124,9 +124,11 @@ class StrudelSamples:
     def load_map_file(self, spec: str, base: str = "") -> None:
         path = Path(spec).expanduser()
         if path.exists():
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
         else:
-            data = json.loads(self._fetch_cached(map_url(spec), suffix=".json").read_text())
+            data = json.loads(
+                self._fetch_cached(map_url(spec), suffix=".json").read_text(encoding="utf-8")
+            )
         if not base and not path.exists():
             base = map_url(spec).rsplit("/", 1)[0] + "/"
         self.load_map(data, base)
@@ -138,7 +140,9 @@ class StrudelSamples:
             except OSError as exc:
                 logger.warning("cannot load Strudel sample map %s: %s", spec, exc)
         try:
-            aliases = json.loads(self._fetch_cached(ALIAS_MAP, suffix=".json").read_text())
+            aliases = json.loads(
+                self._fetch_cached(ALIAS_MAP, suffix=".json").read_text(encoding="utf-8")
+            )
             self.aliases = {short.lower(): full for full, short in aliases.items()}
         except OSError as exc:
             logger.warning("cannot load Strudel bank aliases: %s", exc)

@@ -40,8 +40,10 @@ def main() -> None:
     subprocess.run(
         ["node", "build.mjs", str(STRUDEL), str(BUNDLE), str(NOTICES)], cwd=HERE, check=True
     )
-    header = f"/* Strudel {REVISION} ({REPO}), built by scripts/strudel_bundle. AGPL-3.0-or-later. */\n"
-    BUNDLE.write_text(header + BUNDLE.read_text())
+    header = (
+        f"/* Strudel {REVISION} ({REPO}), built by scripts/strudel_bundle. AGPL-3.0-or-later. */\n"
+    )
+    BUNDLE.write_text(header + BUNDLE.read_text(encoding="utf-8"), encoding="utf-8")
     subprocess.run(
         ["node", "node_events.mjs", str(STRUDEL), str(BUNDLE), str(FIXTURE), str(CYCLES)],
         cwd=HERE,

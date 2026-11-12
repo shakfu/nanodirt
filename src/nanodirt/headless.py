@@ -334,7 +334,7 @@ def play_file(
         # A save truncates, then writes: read only once the file has not changed for a poll.
         if now is not None and now == last and now != seen:
             try:
-                code = path.read_text()
+                code = path.read_text(encoding="utf-8")
             except FileNotFoundError:
                 code = None
             if code is not None and mark() == now:

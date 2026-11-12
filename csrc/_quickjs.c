@@ -1,18 +1,35 @@
 // Vendored from genotrance/quickjs-ng 0.18.0.1 (MIT, see LICENSE in this directory).
 // nanodirt changes: include path; the time limit counts this thread's CPU time, not the
-// process's (clock() also counts the engine's audio thread); Python callbacks are allowed
-// while a time limit is set, and a nested call into JS shares the outer call's limit; each context has a recursive lock, so it can be shared between
-// threads.
+// process's (clock() also counts the engine's audio thread), on Windows too; Python
+// callbacks are allowed while a time limit is set, and a nested call into JS shares the
+// outer call's limit; each context has a recursive lock, so it can be shared between
+// threads; a Python int outside int32 becomes a JS number, not a truncated int.
 //
 // Py_LIMITED_API, when applicable, is supplied by setup.py.
 #include <Python.h>
+#include <math.h>
 #include <time.h>
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 #include "quickjs.h"
 
 // Seconds of CPU time used by the calling thread.
 static double thread_cpu_seconds(void) {
-#if defined(CLOCK_THREAD_CPUTIME_ID)
+#if defined(_WIN32)
+	FILETIME created, exited, kernel, user;  // user and kernel time, in 100 ns units
+	if (GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user)) {
+		ULARGE_INTEGER k, u;
+		k.LowPart = kernel.dwLowDateTime;
+		k.HighPart = kernel.dwHighDateTime;
+		u.LowPart = user.dwLowDateTime;
+		u.HighPart = user.dwHighDateTime;
+		return (double)(k.QuadPart + u.QuadPart) * 1e-7;
+	}
+	return (double)clock() / CLOCKS_PER_SEC;
+#elif defined(CLOCK_THREAD_CPUTIME_ID)
 	struct timespec ts;
 	clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
 	return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
@@ -274,14 +291,22 @@ static JSValueConst python_to_quickjs(RuntimeData *runtime_data, PyObject *item)
 		return JS_MKVAL(JS_TAG_BOOL, item == Py_True ? 1 : 0);
 	} else if (PyLong_Check(item)) {
 		int overflow;
-		long value = PyLong_AsLongAndOverflow(item, &overflow);
+		long long value = PyLong_AsLongLongAndOverflow(item, &overflow);
 		if (overflow) {
 			PyObject *float_value = PyNumber_Float(item);
+			if (float_value == NULL) {  // beyond a double: +-Infinity, as JS Number(bigint)
+				PyErr_Clear();
+				PyObject *zero = PyLong_FromLong(0);
+				int negative = zero ? PyObject_RichCompareBool(item, zero, Py_LT) : 0;
+				Py_XDECREF(zero);
+				PyErr_Clear();
+				return JS_NewFloat64(runtime_data->context, negative == 1 ? -HUGE_VAL : HUGE_VAL);
+			}
 			double double_value = PyFloat_AsDouble(float_value);
 			Py_DECREF(float_value);
 			return JS_NewFloat64(runtime_data->context, double_value);
 		} else {
-			return JS_MKVAL(JS_TAG_INT, value);
+			return JS_NewInt64(runtime_data->context, value);  // an int32 if it fits
 		}
 	} else if (PyFloat_Check(item)) {
 		return JS_NewFloat64(runtime_data->context, PyFloat_AsDouble(item));

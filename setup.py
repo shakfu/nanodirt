@@ -11,7 +11,10 @@ _stable_abi = sys.implementation.name == "cpython" and not sysconfig.get_config_
 )
 
 QJS = "thirdparty/quickjs-ng"
-args = ["-Werror=incompatible-pointer-types"]
+if sys.platform == "win32":  # MSVC; quickjs-ng needs C11 and its atomics
+    args = ["/std:c11", "/experimental:c11atomics", "/D_CRT_SECURE_NO_WARNINGS"]
+else:
+    args = ["-Werror=incompatible-pointer-types"]
 if _stable_abi:
     args.append("-DPy_LIMITED_API=0x030A0000")
 

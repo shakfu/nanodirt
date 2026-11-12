@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     runs-on: ${{ matrix.os }}
@@ -74,6 +74,8 @@ jobs:
             arch: arm64
           - os: ubuntu-latest
             arch: x86_64
+          - os: windows-latest
+            arch: AMD64
 
     runs-on: ${{ matrix.os }}
     name: wheel (${{ matrix.os }}, ${{ matrix.arch }})
@@ -104,7 +106,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
 
     runs-on: ${{ matrix.os }}
     name: wheel on py3.14 (${{ matrix.os }})
@@ -131,10 +133,12 @@ jobs:
 
       # tests/ imports the installed nanodirt: src/ is not on the path.
       - name: Install wheel and test
+        shell: bash
         run: |
           uv venv
           uv pip install wheelhouse/*.whl pytest numpy
-          .venv/bin/python -m pytest tests/
+          py=.venv/bin/python; [ -x "$py" ] || py=.venv/Scripts/python.exe
+          "$py" -m pytest tests/
 
   # The sdist builds and its own tests pass, as a distribution packager would run them.
   build-sdist:
