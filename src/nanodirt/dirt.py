@@ -575,6 +575,22 @@ class Dirt:
         self.library._ensure_loaded(found[0])
         return found if found[0].header is not None else None
 
+    def prepare_strudel(self, events: Iterable[Mapping[str, Any]], timeout: float = 10.0) -> bool:
+        """Load the ``gm_`` zones *events* play, waiting up to *timeout*, and read their buffers.
+
+        Returns False if some were still loading at the timeout.
+        """
+        from .dough import font_key
+
+        fonts = getattr(self.remote, "soundfonts", None)
+        if fonts is None:
+            return True
+        keys = {k for k in map(font_key, events) if k is not None}
+        ready = bool(fonts.prefetch(keys, timeout))
+        for key in keys:
+            self._find_font(*key)  # sends the buffer read now, not with the first note
+        return ready
+
     def _find_font(self, name: str, index: int, midi: float) -> tuple[Sample, Any] | None:
         """A ``gm_`` soundfont zone, from the Strudel samples' soundfonts."""
         fonts = getattr(self.remote, "soundfonts", None)

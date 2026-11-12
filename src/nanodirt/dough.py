@@ -235,6 +235,15 @@ def filters(e: Mapping[str, Any], duration: float) -> list[tuple[str, dict[str, 
     return out
 
 
+def sound_name(e: Mapping[str, Any]) -> str | None:
+    """The sound superdough looks up: ``bank_s``, else ``s`` lowercased, oscillator aliases resolved."""
+    s = e.get("s")
+    if not isinstance(s, str):
+        return None
+    bank = e.get("bank")
+    return OSCILLATORS.get(s.lower(), s.lower()) if not bank else f"{bank}_{s}"
+
+
 def voice(
     e: Mapping[str, Any],
     num_channels: int,
@@ -242,11 +251,9 @@ def voice(
     find_font: FindFont | None = None,
 ) -> Voice | None:
     """superdough's voice for a Strudel event, or None if superdough has no such sound."""
-    s = e.get("s")
-    if not isinstance(s, str):
+    name = sound_name(e)
+    if name is None:
         return None
-    bank = e.get("bank")
-    name = OSCILLATORS.get(s.lower(), s.lower()) if not bank else f"{bank}_{s}"
     duration = float(e.get("delta") or 0.0)
     if name in OSCILLATORS.values() or name in NOISES:
         env, life = _envelope(e, SOURCE_ENVELOPE, duration)
@@ -255,7 +262,7 @@ def voice(
             controls["density"] = _number(e.get("density")) or CRACKLE_DENSITY
         return Voice(f"dough_{name}", controls, 1, _gate(e, life), filters=filters(e, duration))
     if find_font is not None and name in GM:
-        return _font_voice(e, name, duration, find_font)
+        return _font_voice(e, duration, find_font)
     if find_sample is None:
         return None
     return _sample_voice(e, name, duration, find_sample)
@@ -329,14 +336,24 @@ def _sample_voice(
     )
 
 
-def _font_voice(e: Mapping[str, Any], name: str, duration: float, find: FindFont) -> Voice:
+def font_key(e: Mapping[str, Any]) -> tuple[str, int, float] | None:
+    """The ``gm_`` instrument, preset index and key an event plays, or None if not a soundfont."""
+    name = sound_name(e)
+    if name not in GM:
+        return None
+    n = _number(e.get("n")) or 0.0
+    return name, math.floor(n + 0.5), midi(e, FONT_NOTE)  # getSoundIndex: Math.round
+
+
+def _font_voice(e: Mapping[str, Any], duration: float, find: FindFont) -> Voice:
     """``registerSoundfonts`` and ``getFontBufferSource`` (fontloader.mjs).
 
     Silent until the zone is loaded. ``vib`` and the pitch envelope are not implemented.
     """
-    target = midi(e, FONT_NOTE)
-    n = _number(e.get("n")) or 0.0
-    found = find(name, math.floor(n + 0.5), target)  # getSoundIndex
+    key = font_key(e)
+    assert key is not None
+    target = key[2]
+    found = find(*key)
     if found is None:
         return SILENT
     sample, zone = found
@@ -553,6 +570,7 @@ __all__ = [
     "envelope_points",
     "filter_type",
     "filters",
+    "font_key",
     "frequency",
     "midi",
     "synthdefs",

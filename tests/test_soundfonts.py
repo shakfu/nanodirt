@@ -170,6 +170,63 @@ def test_load_in_the_background(tmp_path: Path, served: str) -> None:
     assert found[1].sample_rate == 22050
 
 
+def test_prefetch_waits_for_the_zones(tmp_path: Path, served: str) -> None:
+    fonts = Soundfonts(tmp_path / "cache", url=served)
+    keys = [("gm_piano", 0, 48), ("gm_piano", 0, 70), ("gm_piano", 1, 60), ("gm_nonesuch", 0, 60)]
+    assert fonts.prefetch(keys, timeout=10)
+    assert all(fonts.get(*k) is not None for k in keys[:3])  # ready for the first note
+    assert fonts.prefetch([("gm_piano", 0, 200)], timeout=0)  # no zone: nothing to wait for
+
+
+def test_prefetch_gives_up_at_the_timeout(
+    tmp_path: Path, served: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import urllib.request
+
+    release = threading.Event()
+    urlopen = urllib.request.urlopen
+
+    def slow(*args: Any, **kwargs: Any) -> Any:
+        release.wait(10)
+        return urlopen(*args, **kwargs)
+
+    monkeypatch.setattr(urllib.request, "urlopen", slow)
+    fonts = Soundfonts(tmp_path / "cache", url=served)
+    start = time.monotonic()
+    assert not fonts.prefetch([("gm_piano", 0, 48)], timeout=0.2)
+    assert 0.2 <= time.monotonic() - start < 2
+    release.set()  # the load goes on in the background
+    assert fonts.prefetch([("gm_piano", 0, 48)], timeout=10)
+
+
+def test_a_failed_preset_ends_the_wait(tmp_path: Path) -> None:
+    fonts = Soundfonts(tmp_path / "cache", url=(tmp_path / "nothing").as_uri())
+    start = time.monotonic()
+    assert fonts.prefetch([("gm_piano", 0, 48)], timeout=10)  # settled: it cannot load
+    assert time.monotonic() - start < 5
+
+
+def test_dirt_prepares_soundfonts_and_reads_their_buffers(tmp_path: Path, served: str) -> None:
+    from oracle import FakeServer
+
+    from nanodirt.dirt import Dirt
+    from nanodirt.strudel import StrudelSamples
+
+    reads: list[str] = []
+    server = FakeServer()
+    server.read_buffer = lambda path: reads.append(path) or len(reads)  # type: ignore[attr-defined]
+    dirt = Dirt(server, sample_rate=44100.0)
+    assert dirt.prepare_strudel([{"s": "gm_piano"}])  # no Strudel samples: nothing to do
+    dirt.remote = StrudelSamples(tmp_path / "strudel", fetch=False)
+    dirt.remote.soundfonts = Soundfonts(tmp_path / "fonts", url=served)
+    events = [{"s": "gm_piano", "note": 48}, {"s": "gm_piano", "note": 50}, {"s": "bd"}]
+    assert dirt.prepare_strudel(events)
+    assert [Path(r).name for r in reads] == ["0.wav"]  # one zone, read before the first note
+    v = dough.voice(events[0], 2, None, dirt._find_font)
+    assert v is not None and v is not dough.SILENT and v.sample is not None
+    assert v.sample.buffer == 1
+
+
 def test_unknown_names_and_keys(tmp_path: Path, served: str) -> None:
     fonts = Soundfonts(tmp_path / "cache", blocking=True, url=served)
     assert fonts.get("gm_nonesuch", 0, 60) is None

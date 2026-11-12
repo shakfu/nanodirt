@@ -20,8 +20,10 @@ import re
 import struct
 import sys
 import threading
+import time
 import urllib.request
 from array import array
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -220,7 +222,34 @@ class Soundfonts:
         self._pending: set[tuple[str, float]] = set()
         self._queue: queue.Queue[tuple[str, float]] = queue.Queue()
         self._lock = threading.Lock()
+        self._loaded = threading.Condition(self._lock)  # notified after each load
         self._worker: threading.Thread | None = None
+
+    def prefetch(self, keys: Iterable[tuple[str, int, float]], timeout: float) -> bool:
+        """Load the zones for *keys* (instrument, preset index, midi), waiting up to *timeout*.
+
+        Returns False if some were still loading at the timeout; they load on in the background.
+        """
+        keys = [k for k in set(keys) if k[0] in GM and self.get(*k) is None]
+        deadline = time.monotonic() + timeout
+        with self._loaded:
+            while not all(self._settled(*k) for k in keys):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._loaded.wait(remaining)
+        return True
+
+    def _settled(self, name: str, index: int, midi: float) -> bool:  # with self._lock held
+        fonts = GM[name]
+        preset = fonts[index % len(fonts)]
+        if preset in self.failed:
+            return True
+        zones = self.presets.get(preset)
+        if zones is None:
+            return False
+        i = find_zone(zones, midi)
+        return i is None or (preset, i) in self.samples
 
     def get(self, name: str, index: int, midi: float) -> tuple[Sample, Zone] | None:
         """The decoded zone of instrument *name*, preset *index*, for *midi*, if ready."""
@@ -321,6 +350,7 @@ class Soundfonts:
             finally:
                 with self._lock:
                     self._pending.discard(job)
+                    self._loaded.notify_all()
 
 
 __all__ = ["GM", "SOUNDFONT_URL", "PresetError", "Soundfonts", "Zone", "find_zone", "parse_preset"]

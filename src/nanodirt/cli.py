@@ -170,7 +170,13 @@ def play_strudel_file(args: argparse.Namespace) -> int:
 
         threading.Thread(target=load, name="nanodirt-maps", daemon=True).start()
 
-    scheduler = Scheduler(lambda: Strudel(on_samples=on_samples), dirt.play_strudel)
+    def prepare(events: list[dict[str, Any]]) -> None:
+        if not dirt.prepare_strudel(events):
+            print("nanodirt: soundfonts still loading; their first notes may be silent", flush=True)
+
+    scheduler = Scheduler(
+        lambda: Strudel(on_samples=on_samples), dirt.play_strudel, prepare=prepare
+    )
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     signal.signal(signal.SIGTERM, lambda *_: stop.set())

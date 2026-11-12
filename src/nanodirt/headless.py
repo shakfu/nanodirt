@@ -34,6 +34,7 @@ DURATION = 0.05
 INTERVAL = 0.1
 OVERLAP = 0.1
 MIN_LATENCY = 0.01
+PREPARE_CYCLES = 4  # cycles an evaluation queries ahead to load its sounds (Scheduler.prepare)
 
 
 class StrudelError(Exception):
@@ -176,6 +177,9 @@ class Scheduler:
     the playing one only if it succeeds. Queries never wait for an evaluation, however slow.
     *clock* gives seconds on *play*'s timeline (Dirt's is Unix time). Window bounds and event
     times follow cyclist.mjs exactly, so events land where strudel.cc puts them.
+
+    *prepare*, if given, receives the controls of the next ``PREPARE_CYCLES`` cycles of each
+    evaluated pattern before it plays, to load the sounds they use; the old pattern plays on.
     """
 
     def __init__(
@@ -183,10 +187,12 @@ class Scheduler:
         new_strudel: Callable[[], Strudel],
         play: Callable[[dict[str, Any], float], object],
         clock: Callable[[], float] = time.time,
+        prepare: Callable[[list[dict[str, Any]]], object] | None = None,
     ) -> None:
         self.new_strudel = new_strudel
         self.play = play
         self.clock = clock
+        self.prepare = prepare
         self.strudel = new_strudel()  # the playing runtime; silent until an evaluation
         self.cps = self.strudel.cps
         self.skipped_ticks = 0  # ticks already past when the clock reached them
@@ -228,12 +234,24 @@ class Scheduler:
                 calls = runtime.cps_calls
             finally:
                 self._load_spare()
+            if self.prepare is not None:
+                self._prepare(runtime, calls[-1] if calls else self.cps)
         with self._lock:
             self.strudel = runtime
             for cps in calls:  # cyclist.mjs setCps
                 if cps != self.cps:
                     self.cps = cps
                     self._ticks_since_change = 0
+
+    def _prepare(self, runtime: Strudel, cps: float) -> None:
+        assert self.prepare is not None
+        with self._lock:
+            begin = self._last_end  # where the new pattern starts playing
+        try:
+            events = runtime.query(begin, begin + PREPARE_CYCLES, cps)
+            self.prepare([e.controls for e in events])
+        except Exception:  # noqa: BLE001 -- the pattern still plays; its sounds load on first use
+            logger.exception("strudel: preparing sounds failed")
 
     def tick(self) -> None:
         """One clock callback (zyklus.mjs onTick): each tick due within the lookahead."""

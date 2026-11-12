@@ -26,6 +26,7 @@ from nanodirt import _quickjs
 from nanodirt.cli import main
 from nanodirt.headless import (
     LATENCY,
+    PREPARE_CYCLES,
     Scheduler,
     Strudel,
     StrudelError,
@@ -435,6 +436,37 @@ def test_slow_evaluation_drops_no_events() -> None:
     assert sched.skipped_ticks == 0
     gaps = [b - a for a, b in zip(played, played[1:])]
     assert len(played) > 10 and max(gaps) == pytest.approx(0.125, abs=1e-6)
+
+
+def test_evaluation_prepares_the_next_cycles_before_they_play() -> None:
+    clock = FakeClock()
+    prepared: list[tuple[list[str], list[str]]] = []  # (to prepare, playing meanwhile)
+
+    def prepare(events: list[dict[str, Any]]) -> None:
+        playing = sorted(e.controls["s"] for e in sched.strudel.query(0, 1))
+        prepared.append((sorted(e["s"] for e in events), playing))
+
+    sched = Scheduler(Strudel, lambda c, t: None, clock, prepare=prepare)
+    sched.evaluate('setcps(1)\ns("bd sd")')
+    assert prepared == [(sorted(["bd", "sd"] * PREPARE_CYCLES), [])]
+    for _ in range(10):  # 1 s at cps 1
+        sched.tick()
+        clock.t += 0.1
+    sched.evaluate('setcps(1)\ns("<hh cp sn>")')
+    # onsets from where the new pattern starts (cycle 1.1): cycles 2-5, not 0-3 (hh cp sn hh)
+    assert sched._last_end == pytest.approx(1.1)
+    assert prepared[1] == (["cp", "hh", "sn", "sn"], ["bd", "sd"])
+
+
+def test_a_failing_prepare_does_not_fail_the_evaluation(caplog: pytest.LogCaptureFixture) -> None:
+    def prepare(events: list[dict[str, Any]]) -> None:
+        raise RuntimeError("no network")
+
+    sched = Scheduler(Strudel, lambda c, t: None, FakeClock(), prepare=prepare)
+    with caplog.at_level(logging.ERROR):
+        sched.evaluate('s("bd")')
+    assert "preparing sounds failed" in caplog.text
+    assert [e.controls["s"] for e in sched.strudel.query(0, 1)] == ["bd"]
 
 
 def test_scheduler_skips_ticks_in_the_past() -> None:
