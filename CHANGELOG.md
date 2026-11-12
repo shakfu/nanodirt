@@ -9,11 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Strudel's `gm_` soundfonts play, as on strudel.cc, live and in `nanodirt render`. Presets download into the cache from the URL Strudel uses, and only the zones notes need are decoded. `nanodirt strudel` loads those of the next 4 cycles when it evaluates, before the new code plays, so the first note sounds; the old pattern plays on meanwhile, for up to 10 s. Other notes, and those from strudel.cc over the WebSocket, load on first use and are silent until then, as superdough skips a note still loading. Presets are parsed as data, not run as JavaScript. They match superdough sample by sample, except that superdough also plays the MP3's end padding, up to 40 ms of encoder output, after a zone that does not loop (`docs/dev/soundfonts.md`). nanodirt ships no soundfont data.
+- Strudel's `gm_` soundfonts play, as on strudel.cc, live and in `nanodirt render`. Presets download into the cache from the URL Strudel uses, and only the zones notes need are decoded. Notes load on first use and are silent until then, as superdough skips a note still loading. Presets are parsed as data, not run as JavaScript. They match superdough sample by sample, except that superdough also plays the MP3's end padding, up to 40 ms of encoder output, after a zone that does not loop (`docs/dev/soundfonts.md`). nanodirt ships no soundfont data.
 
 - MP3 decoding without ffmpeg: minimp3 (CC0), vendored as `nanodirt._mp3`. It decodes soundfont zones and MP3 files in sample maps, such as the default `piano` map, which needed ffmpeg. Its output equals ffmpeg's within 1.2e-6, encoder delay and padding removed, as Chrome's `decodeAudioData` does. Ogg and FLAC still need ffmpeg. The package licence adds `CC0-1.0`.
 
+- `nanodirt strudel` loads the samples and soundfont zones of the next 4 cycles when it evaluates, before the new code plays, so first notes sound. It waits up to 10 s, also for maps `samples()` loads; the old pattern plays on meanwhile. Notes first played later, and those from strudel.cc over the WebSocket, still load on first use. Querying ahead over waiting per note: the scheduler's thread never blocks on a download.
+
 ### Fixed
+
+- A Strudel sample that failed to download or decode was downloaded again on every event that played it. A network error, timeout or HTTP 5xx now retries after 5 s, doubling to at most 300 s; any other failure is not retried. `nanodirt render` retries at once instead, after 1 s and 2 s, since a sound it skips stays silent in the file; after one such failure it tries each other sound once until a download succeeds, so a render without network does not wait 3 s per sound. Soundfont presets follow the same rules.
+
+- A truncated HTTP response (`http.client.IncompleteRead`) or a failed ffmpeg run ended the sample download thread: neither is an `OSError`. No sample loaded after it.
 
 - A looping Strudel sample (`loop`) that starts before `loopBegin`, or plays reversed, skipped straight into the loop: `Phasor` wraps a start outside its range at once. It now plays to the loop end first, as Web Audio does, and matches superdough sample by sample.
 

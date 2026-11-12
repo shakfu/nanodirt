@@ -21,6 +21,7 @@ import struct
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 from array import array
 from collections.abc import Iterable
@@ -29,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from .library import Sample, read_header
-from .retry import ERRORS, Backoff, transient
+from .retry import BLOCKING_TRIES, ERRORS, Backoff, attempt, transient
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +221,8 @@ class Soundfonts:
         self.presets: dict[str, list[Zone]] = {}
         self.failed: set[str] = set()  # presets that cannot load: malformed, or HTTP 4xx
         self._retry = Backoff()  # presets that failed to download, by preset
+        self.max_tries = BLOCKING_TRIES if blocking else 1  # a render cannot wait for a backoff
+        self.tries = self.max_tries  # 1 after a transient failure, until a download succeeds
         self.samples: dict[tuple[str, int], Sample] = {}
         self._pending: set[tuple[str, float]] = set()
         self._queue: queue.Queue[tuple[str, float]] = queue.Queue()
@@ -289,7 +292,7 @@ class Soundfonts:
             zones = self.presets.get(preset)
         try:
             if zones is None:
-                zones = self._read_preset(preset)
+                zones = attempt(lambda: self._read_preset(preset), self.tries)
                 with self._lock:
                     self.presets[preset] = zones
             i = find_zone(zones, midi)
@@ -309,11 +312,14 @@ class Soundfonts:
         except ERRORS as exc:  # PresetError and the decoder's ValueError are not transient
             with self._lock:
                 if transient(exc):
+                    self.tries = 1  # the network may be down: later presets skip the waits
                     delay = self._retry.failed(preset)
                     logger.warning(
                         "cannot load soundfont %s: %s; retrying in %.0f s", preset, exc, delay
                     )
                 else:
+                    if isinstance(exc, urllib.error.HTTPError):
+                        self.tries = self.max_tries  # the server answered
                     self.failed.add(preset)
                     logger.warning("cannot load soundfont %s: %s", preset, exc)
 
@@ -327,6 +333,7 @@ class Soundfonts:
             raise PresetError("not in the cache, and fetching is off")
         with urllib.request.urlopen(f"{self.url}/{preset}.js", timeout=30) as r:
             data = r.read(MAX_PRESET_BYTES + 1)
+        self.tries = self.max_tries  # the network is up
         if len(data) > MAX_PRESET_BYTES:
             raise PresetError(f"larger than {MAX_PRESET_BYTES} bytes")
         text = data.decode("utf-8")

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .library import Sample
-from .retry import ERRORS, Backoff, transient
+from .retry import BLOCKING_TRIES, ERRORS, Backoff, attempt, transient
 from .soundfonts import Soundfonts, write_wav
 
 logger = logging.getLogger(__name__)
@@ -100,6 +100,8 @@ class StrudelSamples:
         self.samples: dict[str, Sample] = {}
         self.failed: set[str] = set()  # URLs that cannot load: undecodable, or HTTP 4xx
         self._retry = Backoff()  # URLs that failed to download
+        self.max_tries = BLOCKING_TRIES if blocking else 1  # a render cannot wait for a backoff
+        self.tries = self.max_tries  # 1 after a transient failure, until a download succeeds
         self._pending: set[str] = set()
         self._queue: queue.Queue[str] = queue.Queue()
         self._lock = threading.Lock()
@@ -279,17 +281,20 @@ class StrudelSamples:
     def _try_download(self, url: str) -> None:
         """Download *url*; a transient failure may be retried after a delay, any other never."""
         try:
-            self._download(url)
+            attempt(lambda: self._download(url), self.tries)
         except ERRORS as exc:
             with self._lock:
                 if transient(exc):
+                    self.tries = 1  # the network may be down: later files skip the waits
                     delay = self._retry.failed(url)
                     logger.warning("cannot download %s: %s; retrying in %.0f s", url, exc, delay)
                 else:
+                    self.tries = self.max_tries  # the server answered
                     self.failed.add(url)
                     logger.warning("cannot download %s: %s", url, exc)
         else:
             with self._lock:
+                self.tries = self.max_tries
                 self._retry.succeeded(url)
 
     def _download(self, url: str) -> None:

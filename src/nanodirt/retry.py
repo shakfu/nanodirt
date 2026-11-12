@@ -6,10 +6,14 @@ import http.client
 import time
 import urllib.error
 from collections.abc import Callable, Hashable
+from typing import TypeVar
 
 RETRY_FIRST = 5.0  # seconds before the first retry; doubles per failure
 RETRY_MAX = 300.0
+BLOCKING_TRIES = 3  # attempts when loading blocks (offline rendering), 1 s and 2 s apart
 ERRORS = (OSError, ValueError, http.client.HTTPException)  # what a download and decode raise
+
+T = TypeVar("T")
 
 
 def transient(exc: BaseException) -> bool:
@@ -44,3 +48,15 @@ class Backoff:
 
     def succeeded(self, key: Hashable) -> None:
         self._next.pop(key, None)
+
+
+def attempt(fn: Callable[[], T], tries: int) -> T:
+    """``fn()``, called again after 1 s, 2 s, ... while it fails transiently, *tries* times at most."""
+    for i in range(tries - 1):
+        try:
+            return fn()
+        except ERRORS as exc:
+            if not transient(exc):
+                raise
+            time.sleep(2.0**i)
+    return fn()

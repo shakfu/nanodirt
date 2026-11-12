@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from soundfont_presets import FIXTURES, write_presets
 
-from nanodirt.retry import Backoff, transient
+from nanodirt.retry import BLOCKING_TRIES, Backoff, attempt, transient
 from nanodirt.soundfonts import Soundfonts
 from nanodirt.strudel import StrudelSamples
 
@@ -59,6 +59,31 @@ def test_backoff_doubles_to_its_cap_and_clears_on_success() -> None:
     assert b.failed("k") == 5
 
 
+@pytest.fixture
+def sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    slept: list[float] = []
+    monkeypatch.setattr("nanodirt.retry.time.sleep", slept.append)
+    return slept
+
+
+def test_attempt_retries_only_transient_failures(sleeps: list[float]) -> None:
+    errors: list[BaseException] = [ConnectionResetError(), TimeoutError()]
+
+    def fn() -> str:
+        if errors:
+            raise errors.pop(0)
+        return "ok"
+
+    assert attempt(fn, 3) == "ok" and sleeps == [1, 2]
+    errors[:] = [ConnectionResetError()] * 3
+    with pytest.raises(ConnectionResetError):
+        attempt(fn, 3)
+    errors[:] = [ValueError("bad"), ConnectionResetError()]
+    with pytest.raises(ValueError):
+        attempt(fn, 3)  # not retried
+    assert sleeps == [1, 2, 1, 2] and len(errors) == 1
+
+
 class Flaky:
     """``urlopen`` that raises *errors* in turn, then opens the URL."""
 
@@ -85,6 +110,7 @@ def test_a_soundfont_retries_a_network_error(
     monkeypatch.setattr(urllib.request, "urlopen", flaky)
     fonts = Soundfonts(tmp_path / "cache", blocking=True, url=served)
     fonts._retry = Backoff(clock=(clock := Clock()))
+    fonts.tries = 1  # no retries in place
     assert fonts.get("gm_piano", 0, 48) is None
     assert fonts.get("gm_piano", 0, 48) is None  # waiting: not tried again
     assert flaky.calls == 1
@@ -122,6 +148,32 @@ def test_an_incomplete_read_does_not_stop_the_worker(
     assert fonts.get("gm_piano", 1, 60) is not None
 
 
+def test_a_render_retries_a_soundfont_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sleeps: list[float]
+) -> None:
+    served = write_presets(tmp_path / "served").as_uri()
+    flaky = Flaky(*[ConnectionResetError()] * (BLOCKING_TRIES - 1))
+    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+    fonts = Soundfonts(tmp_path / "cache", blocking=True, url=served)
+    assert fonts.get("gm_piano", 0, 48) is not None  # this note, not one 5 s later
+    assert flaky.calls == BLOCKING_TRIES and sleeps == [1, 2]
+    assert Soundfonts(tmp_path / "live", url=served).tries == 1
+
+
+def test_a_render_without_network_waits_once_for_soundfonts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, sleeps: list[float]
+) -> None:
+    served = write_presets(tmp_path / "served").as_uri()
+    flaky = Flaky(*[ConnectionRefusedError()] * (BLOCKING_TRIES + 1))
+    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+    fonts = Soundfonts(tmp_path / "cache", blocking=True, url=served)
+    assert fonts.get("gm_piano", 0, 48) is None  # 3 tries
+    assert fonts.get("gm_epiano1", 0, 48) is None  # another preset: 1 try
+    assert flaky.calls == BLOCKING_TRIES + 1 and sleeps == [1, 2]
+    assert fonts.get("gm_piano", 1, 60) is not None  # the network is back
+    assert fonts.tries == BLOCKING_TRIES
+
+
 # -- sample maps -----------------------------------------------------------------------
 
 
@@ -147,11 +199,38 @@ def test_a_sample_retries_a_network_error(
     monkeypatch.setattr(urllib.request, "urlopen", flaky)
     remote = samples(tmp_path, served, blocking=True)
     remote._retry = Backoff(clock=(clock := Clock()))
+    remote.tries = 1  # no retries in place
     assert remote.get("tone", 0, None) is None
     assert remote.get("tone", 0, None) is None  # waiting
     clock.t = 5
     assert remote.get("tone", 0, None) is not None
     assert flaky.calls == 2
+
+
+def test_a_render_retries_a_sample_in_place(
+    tmp_path: Path, served: str, monkeypatch: pytest.MonkeyPatch, sleeps: list[float]
+) -> None:
+    flaky = Flaky(*[http_error(503)] * (BLOCKING_TRIES - 1))
+    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+    remote = samples(tmp_path, served, blocking=True)
+    assert remote.get("tone", 0, None) is not None
+    assert flaky.calls == BLOCKING_TRIES and sleeps == [1, 2]
+    assert remote.get("bad", 0, None) is None
+    assert sleeps == [1, 2] and remote.failed == {served + "bad.mp3"}  # undecodable: no retry
+
+
+def test_a_render_without_network_waits_once_for_samples(
+    tmp_path: Path, served: str, monkeypatch: pytest.MonkeyPatch, sleeps: list[float]
+) -> None:
+    flaky = Flaky(*[ConnectionRefusedError()] * (BLOCKING_TRIES + 1))
+    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+    remote = samples(tmp_path, served, blocking=True)
+    assert remote.get("tone", 0, None) is None  # 3 tries
+    assert remote.get("bad", 0, None) is None  # another file: 1 try
+    assert flaky.calls == BLOCKING_TRIES + 1 and sleeps == [1, 2]
+    remote._retry = Backoff()
+    assert remote.get("tone", 0, None) is not None  # the network is back
+    assert remote.tries == BLOCKING_TRIES
 
 
 def test_an_undecodable_sample_is_downloaded_once(
