@@ -9,12 +9,14 @@ import os
 import signal
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
 DEFAULT_SAMPLES = (
     Path(os.environ.get("NANODIRT_CACHE", Path.home() / ".cache" / "nanodirt")) / "Dirt-Samples"
 )
+PREPARE_TIMEOUT = 10.0  # seconds an evaluation waits for its sounds; the old pattern plays on
 
 
 def engine_options(args: argparse.Namespace, inputs: int = 2):  # type: ignore[no-untyped-def]
@@ -168,11 +170,19 @@ def play_strudel_file(args: argparse.Namespace) -> int:
             except OSError as exc:
                 print(f"nanodirt: cannot load samples {spec}: {exc}", file=sys.stderr)
 
-        threading.Thread(target=load, name="nanodirt-maps", daemon=True).start()
+        thread = threading.Thread(target=load, name="nanodirt-maps", daemon=True)
+        thread.start()
+        maps.append(thread)
+
+    maps: list[threading.Thread] = []
 
     def prepare(events: list[dict[str, Any]]) -> None:
-        if not dirt.prepare_strudel(events):
-            print("nanodirt: soundfonts still loading; their first notes may be silent", flush=True)
+        deadline = time.monotonic() + PREPARE_TIMEOUT
+        for thread in maps:  # the maps samples() loads name the banks to prepare
+            thread.join(max(0.0, deadline - time.monotonic()))
+        maps[:] = [t for t in maps if t.is_alive()]
+        if maps or not dirt.prepare_strudel(events, max(0.0, deadline - time.monotonic())):
+            print("nanodirt: sounds still loading; their first notes may be silent", flush=True)
 
     scheduler = Scheduler(
         lambda: Strudel(on_samples=on_samples), dirt.play_strudel, prepare=prepare

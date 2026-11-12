@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from .library import Sample, read_header
+from .retry import ERRORS, Backoff, transient
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +218,8 @@ class Soundfonts:
         self.blocking = blocking  # load on first use, before returning (offline rendering)
         self.url = url
         self.presets: dict[str, list[Zone]] = {}
-        self.failed: set[str] = set()  # presets that could not be loaded; not retried
+        self.failed: set[str] = set()  # presets that cannot load: malformed, or HTTP 4xx
+        self._retry = Backoff()  # presets that failed to download, by preset
         self.samples: dict[tuple[str, int], Sample] = {}
         self._pending: set[tuple[str, float]] = set()
         self._queue: queue.Queue[tuple[str, float]] = queue.Queue()
@@ -243,8 +245,8 @@ class Soundfonts:
     def _settled(self, name: str, index: int, midi: float) -> bool:  # with self._lock held
         fonts = GM[name]
         preset = fonts[index % len(fonts)]
-        if preset in self.failed:
-            return True
+        if preset in self.failed or self._retry.waiting(preset):
+            return True  # cannot load, or not before its retry
         zones = self.presets.get(preset)
         if zones is None:
             return False
@@ -268,7 +270,7 @@ class Soundfonts:
                 sample = self.samples.get((preset, i))
                 if sample is not None:
                     return sample, zones[i]
-            if preset in self.failed or self.blocking:
+            if preset in self.failed or self._retry.waiting(preset) or self.blocking:
                 return None
             if (preset, midi) not in self._pending:
                 self._pending.add((preset, midi))
@@ -282,7 +284,7 @@ class Soundfonts:
     def _load(self, preset: str, midi: float) -> None:
         """Fetch and parse *preset* if needed, then decode the zone for *midi*."""
         with self._lock:
-            if preset in self.failed:
+            if preset in self.failed or self._retry.waiting(preset):
                 return
             zones = self.presets.get(preset)
         try:
@@ -303,10 +305,17 @@ class Soundfonts:
                 raise PresetError(f"cannot read {path}")
             with self._lock:
                 self.samples[(preset, i)] = sample
-        except (OSError, ValueError) as exc:  # PresetError, and the decoder's ValueError
-            logger.warning("cannot load soundfont %s: %s", preset, exc)
+                self._retry.succeeded(preset)
+        except ERRORS as exc:  # PresetError and the decoder's ValueError are not transient
             with self._lock:
-                self.failed.add(preset)
+                if transient(exc):
+                    delay = self._retry.failed(preset)
+                    logger.warning(
+                        "cannot load soundfont %s: %s; retrying in %.0f s", preset, exc, delay
+                    )
+                else:
+                    self.failed.add(preset)
+                    logger.warning("cannot load soundfont %s: %s", preset, exc)
 
     def _read_preset(self, preset: str) -> list[Zone]:
         if not _PRESET_NAME.match(preset):

@@ -576,19 +576,28 @@ class Dirt:
         return found if found[0].header is not None else None
 
     def prepare_strudel(self, events: Iterable[Mapping[str, Any]], timeout: float = 10.0) -> bool:
-        """Load the ``gm_`` zones *events* play, waiting up to *timeout*, and read their buffers.
+        """Load the samples and ``gm_`` zones *events* play, waiting up to *timeout* in all,
+        and read their buffers.
 
         Returns False if some were still loading at the timeout.
         """
-        from .dough import font_key
+        from .dough import font_key, sample_key
+        from .strudel import StrudelSamples
 
-        fonts = getattr(self.remote, "soundfonts", None)
-        if fonts is None:
+        remote: StrudelSamples | None = self.remote
+        if remote is None:
             return True
-        keys = {k for k in map(font_key, events) if k is not None}
-        ready = bool(fonts.prefetch(keys, timeout))
-        for key in keys:
-            self._find_font(*key)  # sends the buffer read now, not with the first note
+        events = list(events)
+        samples = {k for k in map(sample_key, events) if k is not None}
+        samples = {k for k in samples if self.library.get(k[0], k[1]) is None}  # local banks
+        fonts = {k for k in map(font_key, events) if k is not None}
+        deadline = time.monotonic() + timeout
+        ready = remote.prepare(samples, timeout)
+        ready = remote.soundfonts.prefetch(fonts, max(0.0, deadline - time.monotonic())) and ready
+        for key in samples:
+            self._find_sample(*key)  # sends the buffer read now, not with the first note
+        for fkey in fonts:
+            self._find_font(*fkey)
         return ready
 
     def _find_font(self, name: str, index: int, midi: float) -> tuple[Sample, Any] | None:

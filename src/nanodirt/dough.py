@@ -265,16 +265,24 @@ def voice(
         return _font_voice(e, duration, find_font)
     if find_sample is None:
         return None
-    return _sample_voice(e, name, duration, find_sample)
+    return _sample_voice(e, duration, find_sample)
 
 
-def _sample_voice(
-    e: Mapping[str, Any], name: str, duration: float, find: FindSample
-) -> Voice | None:
-    """``onTriggerSample`` and ``getSampleBufferSource`` (sampler.mjs)."""
-    target = midi(e)
+def sample_key(e: Mapping[str, Any]) -> tuple[str, int, float] | None:
+    """The sound, index and key a sample event looks up, or None if it plays no sample."""
+    name = sound_name(e)
+    if name is None or name in OSCILLATORS.values() or name in NOISES or name in GM:
+        return None
     n = _number(e.get("n")) or 0.0
-    found = find(name, math.floor(n + 0.5), target)  # getSoundIndex: Math.round, then mod
+    return name, math.floor(n + 0.5), midi(e)  # getSoundIndex: Math.round, then mod
+
+
+def _sample_voice(e: Mapping[str, Any], duration: float, find: FindSample) -> Voice | None:
+    """``onTriggerSample`` and ``getSampleBufferSource`` (sampler.mjs)."""
+    key = sample_key(e)
+    assert key is not None
+    target = key[2]
+    found = find(*key)
     if found is None:
         return None
     sample, root = found

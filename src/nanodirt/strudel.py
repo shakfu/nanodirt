@@ -17,11 +17,14 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import urllib.request
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 from .library import Sample
+from .retry import ERRORS, Backoff, transient
 from .soundfonts import Soundfonts, write_wav
 
 logger = logging.getLogger(__name__)
@@ -95,9 +98,12 @@ class StrudelSamples:
         self.banks: dict[str, list[str] | dict[str, list[str]]] = {}
         self.aliases: dict[str, str] = {}
         self.samples: dict[str, Sample] = {}
+        self.failed: set[str] = set()  # URLs that cannot load: undecodable, or HTTP 4xx
+        self._retry = Backoff()  # URLs that failed to download
         self._pending: set[str] = set()
         self._queue: queue.Queue[str] = queue.Queue()
         self._lock = threading.Lock()
+        self._loaded = threading.Condition(self._lock)  # notified after each download
         self._worker: threading.Thread | None = None
         self.soundfonts = Soundfonts(cache / "soundfonts", fetch, blocking)
 
@@ -162,33 +168,55 @@ class StrudelSamples:
         self, name: str, index: float | None, midi: float | None
     ) -> tuple[Sample, float | None] | None:
         """The sample for an event and, for a pitched bank, its root note."""
-        name = self.resolve_bank(name)
-        bank = self.banks.get(name)
-        if bank is None:
+        found = self._url(name, index, midi)
+        if found is None:
             return None
-        n = int(index or 0)
-        root: float | None = None
-        if isinstance(bank, list):
-            url = bank[n % len(bank)]
-        else:
-            target = SUPERDOUGH_DEFAULT_MIDI if midi is None else midi
-            key = min(bank, key=lambda k: abs(note_to_midi(k) - target))
-            root = float(note_to_midi(key))
-            url = bank[key][n % len(bank[key])]
+        url, root = found
         sample = self._local(url)
         return (sample, root) if sample is not None else None
 
+    def _url(
+        self, name: str, index: float | None, midi: float | None
+    ) -> tuple[str, float | None] | None:
+        bank = self.banks.get(self.resolve_bank(name))
+        if bank is None:
+            return None
+        n = int(index or 0)
+        if isinstance(bank, list):
+            return bank[n % len(bank)], None
+        target = SUPERDOUGH_DEFAULT_MIDI if midi is None else midi
+        key = min(bank, key=lambda k: abs(note_to_midi(k) - target))
+        return bank[key][n % len(bank[key])], float(note_to_midi(key))
+
+    def prepare(self, keys: Iterable[tuple[str, int, float | None]], timeout: float) -> bool:
+        """Download the samples for *keys* (name, index, midi), waiting up to *timeout*.
+
+        Returns False if some were still downloading at the timeout; they go on in the background.
+        """
+        urls = {u for k in set(keys) if (u := self._url(*k)) is not None}
+        waiting = [url for url, _ in urls if self._local(url) is None]
+        deadline = time.monotonic() + timeout
+        with self._loaded:
+            while any(url in self._pending for url in waiting):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._loaded.wait(remaining)
+        return True
+
     def _local(self, url: str) -> Sample | None:
+        path = self._cache_path(url)
         with self._lock:
-            sample = self.samples.get(url)
-            if sample is not None:
-                return sample
-            path = self._cache_path(url)
-            if not path.exists() and self.fetch and self.blocking:
-                try:
-                    self._download(url)
-                except OSError as exc:
-                    logger.warning("cannot download %s: %s", url, exc)
+            if url in self.samples:
+                return self.samples[url]
+            if url in self.failed or self._retry.waiting(url):
+                return None
+            download = self.fetch and self.blocking and not path.exists()
+        if download:
+            self._try_download(url)
+        with self._lock:
+            if url in self.samples:
+                return self.samples[url]
             if path.exists():
                 sample = self.samples[url] = Sample(path)
                 return sample
@@ -226,8 +254,8 @@ class StrudelSamples:
                 path.write_bytes(r.read())
         return path
 
-    def _start_worker(self) -> None:
-        if self._worker is None or not self._worker.is_alive():
+    def _start_worker(self) -> None:  # with self._lock held
+        if self._worker is None:
             self._worker = threading.Thread(target=self._run, name="nanodirt-fetch", daemon=True)
             self._worker.start()
 
@@ -236,14 +264,33 @@ class StrudelSamples:
             try:
                 url = self._queue.get(timeout=5)
             except queue.Empty:
-                return
+                with self._lock:  # a URL queued after the timeout finds no worker and starts one
+                    if self._queue.empty():
+                        self._worker = None
+                        return
+                continue
             try:
-                self._download(url)
-            except OSError as exc:
-                logger.warning("cannot download %s: %s", url, exc)
+                self._try_download(url)
             finally:
                 with self._lock:
                     self._pending.discard(url)
+                    self._loaded.notify_all()
+
+    def _try_download(self, url: str) -> None:
+        """Download *url*; a transient failure may be retried after a delay, any other never."""
+        try:
+            self._download(url)
+        except ERRORS as exc:
+            with self._lock:
+                if transient(exc):
+                    delay = self._retry.failed(url)
+                    logger.warning("cannot download %s: %s; retrying in %.0f s", url, exc, delay)
+                else:
+                    self.failed.add(url)
+                    logger.warning("cannot download %s: %s", url, exc)
+        else:
+            with self._lock:
+                self._retry.succeeded(url)
 
     def _download(self, url: str) -> None:
         target = self._cache_path(url)
@@ -263,19 +310,21 @@ class StrudelSamples:
             try:
                 pcm, channels, rate = decode(data)
             except ValueError as exc:
-                logger.warning("cannot decode %s: %s", url, exc)
-                return
+                raise ValueError(f"cannot decode: {exc}") from None
             write_wav(target, pcm, channels, rate)
             return
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg is None:
-            logger.warning("%s needs ffmpeg to transcode .%s", url, source_ext)
-            return
+            raise ValueError(f"needs ffmpeg to transcode .{source_ext}")
         src = target.with_suffix("." + source_ext)
         src.write_bytes(data)
-        subprocess.run(
-            [ffmpeg, "-loglevel", "error", "-y", "-i", str(src), str(target)],
-            check=True,
-            timeout=60,
-        )
-        src.unlink()
+        try:
+            subprocess.run(
+                [ffmpeg, "-loglevel", "error", "-y", "-i", str(src), str(target)],
+                check=True,
+                timeout=60,
+            )
+        except subprocess.SubprocessError as exc:
+            raise ValueError(f"ffmpeg failed: {exc}") from None
+        finally:
+            src.unlink(missing_ok=True)
