@@ -284,6 +284,7 @@ function differ(xs, N) {
 def test_fast_farey_matches_fraction_js() -> None:
     """The bundle's float-to-fraction gives fraction.js's result, also next to short fractions."""
     s = Strudel()
+    s._ctx.set_time_limit(-1)  # the reference loop is slow by design: over 5 s with MSVC
     s._ctx.eval(_FAREY_REFERENCE)
     cases = """
       const xs = [];
@@ -481,6 +482,13 @@ def test_scheduler_thread_plays_and_stops() -> None:
     assert sched._last_end == 0  # stopped: the next start is at cycle 0
 
 
+def wait_for(cond: Callable[[], bool], what: object = None, timeout: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not cond():
+        assert time.monotonic() < deadline, what
+        time.sleep(0.02)
+
+
 def test_play_file_reevaluates_on_save(tmp_path: Path) -> None:
     song = tmp_path / "song.strudel"
     song.write_text('setcps(1)\ns("bd*4")')
@@ -491,14 +499,8 @@ def test_play_file_reevaluates_on_save(tmp_path: Path) -> None:
     thread = threading.Thread(target=play_file, args=(song, sched, stop, reports.append, 0.02))
     thread.start()
 
-    def wait_for(cond: Callable[[], bool]) -> None:
-        deadline = time.monotonic() + 5
-        while not cond():
-            assert time.monotonic() < deadline, (reports, played[-3:])
-            time.sleep(0.02)
-
     try:
-        wait_for(lambda: any(c["s"] == "bd" for c in played))
+        wait_for(lambda: any(c["s"] == "bd" for c in played), reports)
         song.write_text('setcps(1)\ns("hh*8")')
         wait_for(lambda: played[-1]["s"] == "hh")
         song.write_text('setcps(1)\ns("hh*8").nosuchmethod()')  # fails: hh plays on
@@ -521,18 +523,19 @@ def test_play_file_waits_for_a_save_to_finish(tmp_path: Path) -> None:
     reports: list[str] = []
     sched = Scheduler(Strudel, lambda c, t: None)
     stop = threading.Event()
-    thread = threading.Thread(target=play_file, args=(song, sched, stop, reports.append, 0.05))
+    # a long poll: a stalled writer must not leave a half-written file stable for one
+    thread = threading.Thread(target=play_file, args=(song, sched, stop, reports.append, 0.2))
     try:
         thread.start()
-        time.sleep(0.2)
-        assert reports == ["nanodirt: evaluated song.strudel"]
+        wait_for(lambda: len(reports) == 1, reports)
         code = 's("bd*4")'
-        for i in range(60):  # changes every 5 ms, faster than a poll
+        for i in range(60):  # changes every 5-16 ms (Windows' timer), faster than a poll
             song.write_text(code[: i % len(code) + 1] if i % 2 else "x" * (i + 2))
             time.sleep(0.005)
         assert reports == ["nanodirt: evaluated song.strudel"]
         song.write_text(code)
-        time.sleep(0.3)
+        wait_for(lambda: len(reports) == 2, reports)
+        time.sleep(0.5)  # and no more
     finally:
         stop.set()
         thread.join(5)
