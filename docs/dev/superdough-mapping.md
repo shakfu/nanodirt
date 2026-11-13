@@ -228,7 +228,7 @@ Comparison:
 
 1. Oscillators and noise, with the envelope, gain and pitch rules above. Done 2026-10-27 (`nanodirt/dough.py`): sine matches superdough within 1e-3 sample by sample; `square` and `sawtooth` levels within 3% after scaling by 1.69; noise within 2-30% by type. Not yet: `n` (partials), `noise` mix, `vib`, `penv`, FM.
 
-2. Gain, filters (12 dB biquad, envelope), pan, `postgain`, orbit delay and reverb, for all sources on the Strudel path. Gain, `pan`, `postgain` and samples done 2026-10-27: a voice is a group (source synth, then `dough_gate`), as in SuperDirt; samples, `pan` and envelopes match superdough within 0.3% of the peak, sample by sample. Filters done 2026-10-27: Web Audio's biquad coefficients, recomputed every sample, in direct form I as Chrome's biquad; within 0.3% of the peak for fixed cutoffs and 0.5% for swept ones. Orbit delay and reverb done 2026-10-27 (`dough_orbit.py`): the delay matches superdough sample by sample; the reverb's IRs are both random, so tests compare tail energy (within 35%) and decay curves (within 2 dB) for a click at three room sizes. Not yet: the ladder filter (`ftype` 1, plays as 12 dB), filter LFOs, `ir` (a sample as the IR), ducking, `djf`, effects; `loop` is implemented but not checked against the oracle.
+2. Gain, filters (12 dB biquad, envelope), pan, `postgain`, orbit delay and reverb, for all sources on the Strudel path. Gain, `pan`, `postgain` and samples done 2026-10-27: a voice is a group (source synth, then `dough_gate`), as in SuperDirt; samples, `pan` and envelopes match superdough within 0.3% of the peak, sample by sample. Filters done 2026-10-27: Web Audio's biquad coefficients, recomputed every sample, in direct form I as Chrome's biquad; within 0.3% of the peak for fixed cutoffs and 0.5% for swept ones. Orbit delay and reverb done 2026-10-27 (`dough_orbit.py`): the delay matches superdough sample by sample; the reverb's IRs are both random, so tests compare tail energy (within 35%) and decay curves (within 2 dB) for a click at three room sizes. Not yet: the ladder filter (`ftype` 1, plays as 12 dB), filter LFOs, `ir` (a sample as the IR), ducking, `djf`, effects other than `distort`. `loop` matches superdough sample by sample since 2026-11-12.
 
    Findings that shaped it:
 
@@ -236,12 +236,28 @@ Comparison:
 
    - EnvGen spends one sample on each zero-length segment, so the envelope drops empty stages and pads after the release.
 
+   - `distort` done 2026-11-12: all 9 curves, after the gain stage and filters, before pan and `postgain`. Checks: Chrome's output equals a Python port of `helpers.mjs` applied to Chrome's own clean signal within 1e-5; nanodirt's equals the port applied to nanodirt's clean signal within 2e-4; for gentle curves nanodirt matches Chrome sample by sample within 0.3%. Steep curves multiply input differences by their slope (chebyshev up to 25, asym about 400 near 0), so they are not compared sample by sample. `distort` above 30 plays as 30: past it the curves are saturated and float32 constants overflow. A negative or fractional `distorttype` makes superdough's worklet throw; the voice is silent in both.
+
    - Chrome's feedback delay adds one render quantum per pass: echoes land at `T + (T + 128 frames)(k - 1)`, measured. nanodirt's delay is `y = x[-T] + fb y[-T - 128]`.
 
    - The reverb is `PartConv` (FFT 1024). Its latency, measured, is `fftsize/2 - 2 * block size` (384 samples at block 64); those IR frames are dropped, which superdough's fade-in makes nearly silent. The IR is normalized as Web Audio's `ConvolverNode` does. A realtime engine must finish loading the IR (`/sync`) before `PreparePartConv`, or the spectrum is all zeros.
 
+   - `vib` and `penv` done 2026-11-13, on oscillators, samples and soundfonts; within 0.3% of the peak, sample by sample, for 13 cases. Findings:
+     - An `AudioBufferSourceNode`'s `detune` is k-rate: Chrome reads it once per 128-frame render quantum. Samples and soundfonts hold the pitch for 128 frames; oscillators follow it every frame. The held ratio drives `Sweep` at control rate, where it steps in double precision; at audio rate it steps in float32, and a loop wrap moved by a sample.
+     - `exponentialRampToValueAtTime` between levels of opposite sign holds the start level, then jumps (Web Audio spec). With `pcurve` 1 and the default `panchor`, the pitch sits at `-penv` through the attack.
+     - EnvGen starts every segment on a whole sample and ramps over the fractional length, carrying the remainder into the next segment; at the last segment it jumps to the end level. Chrome evaluates at exact times. Breakpoints moved by up to a sample shifted a pitch curve's integral, the playback position, by up to 3 frames. `pitch()` sends the envelope as its values at whole samples, a 1-sample segment across each breakpoint, with targets offset for EnvGen's arithmetic.
+     - Past a sample's last frame, Chrome outputs about 0.97 x (1 - f) of the last frame at position `frames - 1 + f`, and a little at position `frames`. Measured at 2 points of one test file; not explained. nanodirt interpolates toward zero; the 2 points differ by 0.15% and 0.5% of the peak. Tests stop before a sample runs out.
+
+   - FM done 2026-11-13: `applyFM`'s chain (`fmi`, `fmi2` ... `fmi8`), `fmh`, `fmwave`, the envelope; within 0.3% of the peak, sample by sample, for 8 sine-carrier cases. Findings:
+     - Modulator `k` runs at the carrier's frequency times `fmhk`; its output times `fmik * freq` adds to modulator `k - 1`'s frequency, `fmi` to the carrier's, in Hz. A modulator without its own `fmi` reaches nothing.
+     - The matrix (`fmiIJ`, `helpers.mjs:434-441`) is read by `applyFM`, but `registerMultiControl` registers no control for it.
+     - `fmwave` sets `OscillatorNode.type`, which ignores names it lacks: `saw` plays a sine. Noise modulators use `getNoiseBuffer(type, 2)`, density 2.
+     - The envelope runs only when one of its 4 controls is set; `exp` from 0.001 to 1, as `getParamADSR` substitutes 0.
+     - Chrome's oscillator tables keep the fundamental up to table 33 of 36, 400 cents apart (size 4096 at 44.1 kHz), and blend neighbours. A sine's level is `clamp(3 log2(nyquist / |f|), 0, 1)`: measured 0.42 at 20 kHz, 0.0098 at 22 kHz, the same at -20 kHz. Deep FM crosses it.
+     - scsynth's `LFTri` does not wrap its phase below 0 Hz; the triangle is `LFSaw` folded. `Saw` and `Pulse` read their frequency once per block; `sawtooth` and `square` are differentiated parabolic waves from `LFSaw`.
+
    - When a sample's buffer runs out, superdough releases the voice chain in `onended`, cutting filter tails a few milliseconds later in realtime; nanodirt ends the voice at the buffer's end. In the offline oracle the tail instead stops on Chrome's own biquad tail time, so tests compare up to the buffer's end.
 
-3. Controls by usage: filter envelope, FM, ducking, pitch envelope, `vib`, `compressor`, `supersaw` `unison`.
+3. Controls by usage: filter envelope, FM, ducking, pitch envelope, `vib`, `compressor`, `supersaw` `unison`. Pitch envelope, `vib` and FM done 2026-11-13.
 
 4. `gm_` soundfonts. Licences checked 2026-11-11: fetch on demand, never bundle. Done 2026-11-12: matches superdough within 0.3% of the peak, sample by sample, up to the MP3's end padding (`soundfonts.md`). The sample voice's `loop` now plays to the loop end before wrapping, checked against superdough on the same date.

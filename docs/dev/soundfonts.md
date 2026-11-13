@@ -44,7 +44,7 @@ Done 2026-11-12 (`soundfonts.py`, `csrc/_mp3.c`).
 
 - MP3 decodes with minimp3 (`thirdparty/minimp3`, CC0, pinned at `ea99364`), over ffmpeg, which many users lack, and over MPEG in nanosynth's libsndfile, which needs mpg123 and lame vendored. minimp3 trims the encoder delay and padding recorded in the LAME tag; its output equals ffmpeg's within 1.2e-6.
 
-- Not done: `vib` and the pitch envelope (`gaps.md`); a flag remapping each instrument to its FluidR3 or GeneralUser GS presets. The remap would change the `n=0` sound for 103 instruments, and bundling those presets requires FluidR3's notice and `COPYING`.
+- `vib` and the pitch envelope apply, once per 128 frames as on a Web Audio buffer source (`superdough-mapping.md`). Not done: a flag remapping each instrument to its FluidR3 or GeneralUser GS presets. The remap would change the `n=0` sound for 103 instruments, and bundling those presets requires FluidR3's notice and `COPYING`.
 
 ## Differences from superdough
 

@@ -2,6 +2,8 @@
 
 Measured 2026-10-27, to scope M5 (superdough-only controls). Question: which superdough sound sources and controls does Strudel code use, and which does nanodirt lack?
 
+The "nanodirt" columns describe 2026-10-27. Current gaps: `gaps.md`.
+
 ## Data
 
 | Corpus | Units | Source |

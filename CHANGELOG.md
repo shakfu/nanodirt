@@ -15,7 +15,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `nanodirt strudel` loads the samples and soundfont zones of the next 4 cycles when it evaluates, before the new code plays, so first notes sound. It waits up to 10 s, also for maps `samples()` loads; the old pattern plays on meanwhile. Notes first played later, and those from strudel.cc over the WebSocket, still load on first use. Querying ahead over waiting per note: the scheduler's thread never blocks on a download.
 
+- superdough's `distort` on Strudel voices: its 9 curves (`distorttype`), `distortvol`, after the filters and before pan. Each curve equals superdough's within 2e-4. `gain` now applies before it, as in superdough. `distort` used in 12% of the GitHub repos sampled and did nothing on oscillators, samples and soundfonts.
+
+- superdough's `vib`/`vibmod` and pitch envelope (`penv`, `pattack`, `pdecay`, `psustain`, `prelease`, `panchor`, `pcurve`) on Strudel oscillators, samples and soundfonts; each was used in 4% of the GitHub repos sampled and did nothing. Samples and soundfonts change pitch once per 128 frames, as Web Audio's k-rate `detune` does. They match superdough sample by sample. The envelope is sent as its values at whole samples, not as breakpoints: EnvGen moves a breakpoint to a whole sample, and a sample's position, the integral of its pitch, then drifted by up to 3 frames.
+
+- superdough's FM on Strudel oscillators: `fmi` (`fm`), `fmh`, `fmwave`, the envelope (`fmattack` ... `fmrelease`, `fmenv`), and the chain `fm2` ... `fm8`, each modulating the one before. It matches superdough sample by sample for sine carriers and modulators. `fmi` was used in 12% of the GitHub repos sampled and did nothing. Each modulator is a synth ahead of the source in the voice's group; they pass the signal on one shared bus, as nodes run in order. The matrix (`fmi13`) is not read: Strudel registers no control for it.
+
+### Changed
+
+- Strudel's `sawtooth` and `square` read their frequency every sample, as Web Audio's oscillators do, so FM, `vib` and `penv` apply between control blocks. They are a differentiated parabolic wave, not scsynth's `Saw` and `Pulse`, which read it once per 64 frames. The level is unchanged (within 2% at 880 Hz); aliasing against `Saw` was not measured. Like Chrome's, every oscillator fades out over the third of an octave below the Nyquist frequency, and plays nothing above it.
+
 ### Fixed
+
+- A Strudel event without `s` was silent. superdough plays it as `triangle`, as in `note("c e g").fm(4)` from Strudel's FM docs.
+
+- A Strudel sample or soundfont zone whose last position falls between its last frame and its end was silent there; Chrome plays part of the last frame. A soundfont zone that does not loop now ends its voice when it runs out, as samples did, cutting filter tails as superdough does.
 
 - A Strudel sample that failed to download or decode was downloaded again on every event that played it. A network error, timeout or HTTP 5xx now retries after 5 s, doubling to at most 300 s; any other failure is not retried. `nanodirt render` retries at once instead, after 1 s and 2 s, since a sound it skips stays silent in the file; after one such failure it tries each other sound once until a download succeeds, so a render without network does not wait 3 s per sound. Soundfont presets follow the same rules.
 

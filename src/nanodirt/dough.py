@@ -10,29 +10,33 @@ here per event and sent as controls.
 from __future__ import annotations
 
 import math
+import struct
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from nanosynth.enums import EnvelopeShape
 from nanosynth.envelopes import Envelope, EnvGen
 from nanosynth.synthdef import SynthDef, SynthDefBuilder, control
 from nanosynth.ugens import (
+    A2K,
     DC,
     SOS,
+    BlockSize,
     BufRd,
     BufSampleRate,
     Delay1,
     Delay2,
     Dust2,
     In,
-    LFTri,
+    Latch,
+    LFSaw,
     OffsetOut,
     OnePole,
     Out,
-    Pulse,
+    Phasor,
     ReplaceOut,
     SampleRate,
-    Saw,
     Select,
     SinOsc,
     Sweep,
@@ -54,8 +58,9 @@ SAMPLE_ENVELOPE = (0.001, 0.001, 1.0, 0.01)  # getADSRValues with no defaults
 DEFAULT_GAIN = 0.8
 CRACKLE_DENSITY = 0.02  # getNoiseOscillator's default; synth.mjs reads value.density directly
 # Web Audio normalizes band-limited waves to peak 1, Gibbs overshoot (~1.18) included;
-# Saw and Pulse peak at 0.5. Measured RMS ratio 1.68-1.69 (tests/test_dough.py).
-WAVE_LEVEL = {"triangle": 1.0, "square": 1.69, "sawtooth": 1.69}
+# measured RMS 1.68-1.69 times that of scsynth's Saw and Pulse, which peak at 0.5. The sawtooth
+# and square here peak at 1: RMS 1/sqrt(3) and 1 (tests/test_dough.py).
+WAVE_LEVEL = {"triangle": 1.0, "square": 0.845, "sawtooth": 0.843}
 
 # (name, index, midi) -> (sample, root note of a pitched bank or None)
 FindSample = Callable[[str, int, float], "tuple[Sample, float | None] | None"]
@@ -75,6 +80,9 @@ class Voice:
     cut: int | None = None
     nudge: float = 0.0
     filters: list[tuple[str, dict[str, float]]] = field(default_factory=list)
+    # FM modulators, SynthDef and controls, from the one modulating the source; the player adds
+    # fmbus to them and fm=1, fmbus to the source
+    modulators: list[tuple[str, dict[str, float]]] = field(default_factory=list)
 
 
 SILENT = Voice("", {}, 1, {})  # a superdough source that plays nothing (speed 0)
@@ -166,14 +174,17 @@ def _envelope(
     return controls, duration + adsr[3] + 0.01  # the source stops at end + release + 0.01
 
 
+def _gain(e: Mapping[str, Any]) -> float:
+    """superdough's gain stage: ``gain * velocity``."""
+    gain, velocity = _number(e.get("gain")), _number(e.get("velocity"))
+    return (DEFAULT_GAIN if gain is None else gain) * (1.0 if velocity is None else velocity)
+
+
 def _gate(e: Mapping[str, Any], life: float) -> dict[str, float]:
     """``superdough()``'s voice chain after the source: gain, pan, postgain."""
-    gain, velocity, postgain, pan, dry = (
-        _number(e.get(k)) for k in ("gain", "velocity", "postgain", "pan", "dry")
-    )
-    level = (DEFAULT_GAIN if gain is None else gain) * (1.0 if velocity is None else velocity)
+    postgain, pan, dry = (_number(e.get(k)) for k in ("postgain", "pan", "dry"))
     return {
-        "level": level * (1.0 if postgain is None else postgain),
+        "level": _gain(e) * (1.0 if postgain is None else postgain),
         "pan": 0.5 if pan is None else pan,
         "panned": 0.0 if pan is None else 1.0,  # superdough adds a panner only when pan is set
         "life": life,
@@ -235,13 +246,197 @@ def filters(e: Mapping[str, Any], duration: float) -> list[tuple[str, dict[str, 
     return out
 
 
+PITCH_ENVELOPE = (0.2, 0.001, 1.0, 0.001)  # getPitchEnvelope's defaults
+PITCH_KEYS = ("pattack", "pdecay", "psustain", "prelease")
+SEGMENTS = 8  # of an exact envelope: 4 stages, each breakpoint bridged by a 1-sample segment
+Stage = tuple[float, float, float, float, str]  # start, end (s), from, to, curve
+
+
+def param_adsr(
+    adsr: tuple[float, float, float, float], duration: float, lo: float, hi: float, linear: bool
+) -> list[Stage]:
+    """``getParamADSR``'s ramps from *lo* to *hi*, ending *duration* after the onset."""
+    if not linear:  # exponential ramps cannot reach 0
+        lo, hi = lo or 0.001, hi or 0.001
+    levels, times = envelope_points(adsr, duration, lo, hi)
+    if not linear:
+        levels = [v or 0.001 for v in levels]
+    stages, begin = [], 0.0
+    for v0, v1, t in zip([lo, *levels], levels, times):
+        # exponentialRampToValueAtTime between levels of opposite sign holds the start level
+        curve = "linear" if linear else "exponential" if v0 * v1 > 0 else "hold"
+        stages.append((begin, begin + t, v0, v1, curve))
+        begin += t
+    return stages
+
+
+def exact_envelope(stages: list[Stage], sample_rate: float, prefix: str) -> dict[str, float]:
+    """EnvGen controls that output *stages*' value at every sample, as Web Audio evaluates it.
+
+    EnvGen starts each segment on a whole sample, ramps over the fractional length and carries
+    the remainder into the next. A breakpoint between samples would shift the curve; a pitch
+    curve's integral, the phase or playback position, would drift by up to a few frames.
+    """
+    final = stages[-1][3]
+
+    def stage(n: float) -> Stage:
+        return next((s for s in stages if n / sample_rate < s[1]), (0.0, 1.0, final, final, "hold"))
+
+    def value(n: int) -> float:
+        start, end, v0, v1, curve = stage(n)
+        x = (n / sample_rate - start) / (end - start)
+        if curve == "hold":
+            return v0
+        return v0 + (v1 - v0) * x if curve == "linear" else v0 * (v1 / v0) ** x
+
+    breaks = {0}
+    for _, end, *_ in stages:
+        last = math.ceil(end * sample_rate) - 1  # the last sample before the breakpoint
+        breaks |= {last, last + 1} if last >= 0 else set()
+    points = sorted(breaks)
+    out = {f"{prefix}0": (level := _f32(value(0)))}
+    segments = list(zip(points, points[1:]))
+    residual = 0.0  # EnvGen's: the fraction of a sample the last segment did not play
+    for i in range(SEGMENTS):
+        if i < len(segments):
+            a, b = segments[i]
+            exp = b - a > 1 and stage((a + b) / 2)[4] == "exponential"
+            target, samples = value(b), b - a
+        else:
+            exp, target, samples = False, level, 0
+        seconds = _f32((samples - residual + 0.5) / sample_rate)
+        span = seconds * sample_rate + residual
+        whole = max(1, int(span))
+        spread, residual = max(1.0, span) / whole, span - whole
+        sent = level * (target / level) ** spread if exp else level + (target - level) * spread
+        if i == SEGMENTS - 1:
+            sent = target  # where EnvGen stays when it ends
+        out[f"{prefix}{i + 1}"] = sent
+        out[f"{prefix}t{i + 1}"] = seconds
+        out[f"{prefix}s{i + 1}"] = float(EnvelopeShape.EXPONENTIAL if exp else EnvelopeShape.LINEAR)
+        level = target
+    return out
+
+
+def pitch(e: Mapping[str, Any], duration: float, sample_rate: float) -> dict[str, float]:
+    """``getVibratoOscillator`` and ``getPitchEnvelope``: the source's detune, in cents."""
+    out: dict[str, float] = {}
+    vib = _number(e.get("vib"))
+    if vib is not None and vib > 0:
+        vibmod = _number(e.get("vibmod"))
+        out |= {"vib": vib, "vibmod": 100 * (0.5 if vibmod is None else vibmod)}
+    if all(e.get(k) is None for k in (*PITCH_KEYS, "penv")):
+        return out
+    penv = _number(e.get("penv"))
+    cents = 100 * (1.0 if penv is None else penv)
+    pcurve = e.get("pcurve")
+    linear = pcurve is None or pcurve == 0 or pcurve == "0"  # curves[pcurve]; others exponential
+    adsr = adsr_values(tuple(_number(e.get(k)) for k in PITCH_KEYS), PITCH_ENVELOPE)
+    anchor = _number(e.get("panchor"))
+    anchor = adsr[2] if anchor is None else anchor
+    stages = param_adsr(adsr, duration, -cents * anchor, cents - cents * anchor, linear)
+    return out | exact_envelope(stages, sample_rate, "p")
+
+
+FM_WAVES = ["sine", "square", "sawtooth", "triangle"]  # OscillatorNode types
+FM_NOISE_DENSITY = 2.0  # mod(): getNoiseBuffer(type, 2) passes 2 as the density
+MAX_FM = 8
+
+
+def modulators(
+    e: Mapping[str, Any], freq: float, duration: float, sample_rate: float
+) -> list[tuple[str, dict[str, float]]]:
+    """``applyFM``'s chain: modulator *k* adds to modulator *k - 1*'s frequency, 1 to the carrier's.
+
+    Returns each modulator's SynthDef and controls, from 1. The matrix controls (``fmi13``) have
+    no control function in Strudel and are not read.
+    """
+    out: list[tuple[str, dict[str, float]]] = []
+    for k in range(1, MAX_FM + 1):
+        suffix = "" if k == 1 else str(k)
+        amount = _number(e.get(f"fmi{suffix}"))
+        if not amount:  # a modulator not reaching the carrier changes nothing
+            break
+        ratio = _number(e.get(f"fmh{suffix}"))
+        wave = e.get(f"fmwave{suffix}")
+        if wave not in NOISES:  # the oscillator type setter ignores other names: sine
+            wave = wave if wave in FM_WAVES else "sine"
+        mod_freq = freq * (1.0 if ratio is None else ratio)
+        controls = {"freq": mod_freq, "amount": amount * mod_freq}
+        adsr = tuple(
+            _number(e.get(f"fm{s}{suffix}")) for s in ("attack", "decay", "sustain", "release")
+        )
+        if any(v is not None for v in adsr):
+            linear = (e.get(f"fmenv{suffix}") or "exp") != "exp"
+            stages = param_adsr(adsr_values(adsr, SAMPLE_ENVELOPE), duration, 0.0, 1.0, linear)
+            controls |= exact_envelope(stages, sample_rate, "e")
+        if wave == "crackle":
+            controls["density"] = FM_NOISE_DENSITY
+        if out:
+            out[-1][1]["fm"] = 1.0  # this one modulates the last
+        out.append((f"dough_fm_{wave}", controls))
+    return out
+
+
+def _f32(x: float) -> float:
+    """*x* as a control value: OSC sends float32."""
+    return float(struct.unpack("<f", struct.pack("<f", x))[0])
+
+
 def sound_name(e: Mapping[str, Any]) -> str | None:
-    """The sound superdough looks up: ``bank_s``, else ``s`` lowercased, oscillator aliases resolved."""
-    s = e.get("s")
+    """The sound superdough looks up: ``bank_s``, else ``s`` lowercased, oscillator aliases resolved.
+
+    ``s`` is ``triangle`` when unset (``defaultDefaultValues``).
+    """
+    s = e.get("s", "triangle")
     if not isinstance(s, str):
         return None
     bank = e.get("bank")
     return OSCILLATORS.get(s.lower(), s.lower()) if not bank else f"{bank}_{s}"
+
+
+DISTORTIONS = [  # helpers.mjs distortionAlgorithms, in order: distorttype indexes them
+    "scurve", "soft", "hard", "cubic", "diode", "asym", "fold", "sinefold", "chebyshev",
+]  # fmt: skip
+MAX_DISTORT = 30.0  # expm1(30) = 1.1e13; above, the shapes are saturated and float32 overflows
+
+
+def distortion(e: Mapping[str, Any]) -> tuple[str, dict[str, float]] | None:
+    """``getDistortion``: the waveshaper's SynthDef kind and controls, or None without ``distort``.
+
+    Raises ValueError for a ``distorttype`` superdough cannot resolve, a negative or
+    fractional number: its worklet then throws and the voice is silent.
+    """
+    amount = _number(e.get("distort"))
+    if amount is None:
+        return None
+    algo = e.get("distorttype")
+    if isinstance(algo, str):
+        name = algo if algo in DISTORTIONS else DISTORTIONS[0]  # superdough logs and uses scurve
+    else:
+        index = 0.0 if algo is None else _number(algo)
+        if index is None or index < 0 or index != math.floor(index):
+            raise ValueError(f"no distorttype {algo!r}")
+        name = DISTORTIONS[int(index) % len(DISTORTIONS)]
+    vol = _number(e.get("distortvol"))
+    k = math.expm1(min(amount, MAX_DISTORT))  # the worklet's shape
+    controls = {"post": min(max(1.0 if vol is None else vol, 0.001), 1.0), "k": k}
+    lk = math.log1p(k)  # __squash(log1p(k)); JavaScript divides -1 by 0 to -Infinity
+    t = (lk / (1 + lk) if lk != -1 else -math.inf) if name in ("cubic", "diode", "asym") else 0.0
+    if name == "cubic":
+        controls["t"] = t
+    elif name in ("diode", "asym"):
+        g, bias = 1 + 2 * k, 0.07 * t
+        sech = 0.0 if abs(g * bias) > 700 else 1 / math.cosh(g * bias)
+        controls |= {
+            "bias": bias,
+            "norm": 1 / max(1e-8, (1 if name == "asym" else 2) * g * sech * sech),
+        }
+    elif name == "chebyshev":
+        controls["kl"] = 10 * math.log1p(k)
+    if not all(math.isfinite(v) for v in controls.values()):
+        raise ValueError(f"distort {amount} has no finite shape")
+    return f"distort_{name}", controls
 
 
 def voice(
@@ -249,8 +444,30 @@ def voice(
     num_channels: int,
     find_sample: FindSample | None = None,
     find_font: FindFont | None = None,
+    sample_rate: float = 48000.0,
 ) -> Voice | None:
     """superdough's voice for a Strudel event, or None if superdough has no such sound."""
+    v = _voice(e, find_sample, find_font, sample_rate)
+    if v is None or v is SILENT:
+        return v
+    try:
+        shaper = distortion(e)
+    except ValueError:
+        return SILENT
+    if shaper is not None:  # after the gain stage and filters, before pan and postgain
+        kind, controls = shaper
+        v.filters.append((kind, {"gain": _gain(e), **controls}))
+        postgain = _number(e.get("postgain"))
+        v.gate["level"] = 1.0 if postgain is None else postgain
+    return v
+
+
+def _voice(
+    e: Mapping[str, Any],
+    find_sample: FindSample | None,
+    find_font: FindFont | None,
+    sample_rate: float,
+) -> Voice | None:
     name = sound_name(e)
     if name is None:
         return None
@@ -258,14 +475,25 @@ def voice(
     if name in OSCILLATORS.values() or name in NOISES:
         env, life = _envelope(e, SOURCE_ENVELOPE, duration)
         controls = {"amp": SOURCE_LEVEL, "freq": frequency(e), **env}
+        fm: list[tuple[str, dict[str, float]]] = []
+        if name in OSCILLATORS.values():
+            controls |= pitch(e, duration, sample_rate)
+            fm = modulators(e, controls["freq"], duration, sample_rate)
         if name == "crackle":
             controls["density"] = _number(e.get("density")) or CRACKLE_DENSITY
-        return Voice(f"dough_{name}", controls, 1, _gate(e, life), filters=filters(e, duration))
+        return Voice(
+            f"dough_{name}",
+            controls,
+            1,
+            _gate(e, life),
+            filters=filters(e, duration),
+            modulators=fm,
+        )
     if find_font is not None and name in GM:
-        return _font_voice(e, duration, find_font)
+        return _font_voice(e, duration, find_font, sample_rate)
     if find_sample is None:
         return None
-    return _sample_voice(e, duration, find_sample)
+    return _sample_voice(e, duration, find_sample, sample_rate)
 
 
 def sample_key(e: Mapping[str, Any]) -> tuple[str, int, float] | None:
@@ -277,7 +505,9 @@ def sample_key(e: Mapping[str, Any]) -> tuple[str, int, float] | None:
     return name, math.floor(n + 0.5), midi(e)  # getSoundIndex: Math.round, then mod
 
 
-def _sample_voice(e: Mapping[str, Any], duration: float, find: FindSample) -> Voice | None:
+def _sample_voice(
+    e: Mapping[str, Any], duration: float, find: FindSample, sample_rate: float
+) -> Voice | None:
     """``onTriggerSample`` and ``getSampleBufferSource`` (sampler.mjs)."""
     key = sample_key(e)
     assert key is not None
@@ -308,9 +538,6 @@ def _sample_voice(e: Mapping[str, Any], duration: float, find: FindSample) -> Vo
     env, life = _envelope(e, SAMPLE_ENVELOPE, duration)
     frames = header.frames
     offset = begin * frames
-    if not loop:
-        # When the buffer runs out, onended releases the whole chain, cutting filter tails.
-        life = min(life, (frames - offset) / (rate * header.sample_rate))
     loop_begin, loop_end = (_number(e.get(k)) for k in ("loopBegin", "loopEnd"))
     loop_begin, loop_end = (
         (0.0 if loop_begin is None else loop_begin),
@@ -330,6 +557,7 @@ def _sample_voice(e: Mapping[str, Any], duration: float, find: FindSample) -> Vo
         "loopEnd": loop_end * frames,
         "frames": frames,
         **env,
+        **pitch(e, duration, sample_rate),
     }
     cut = _number(e.get("cut"))
     return Voice(
@@ -353,10 +581,10 @@ def font_key(e: Mapping[str, Any]) -> tuple[str, int, float] | None:
     return name, math.floor(n + 0.5), midi(e, FONT_NOTE)  # getSoundIndex: Math.round
 
 
-def _font_voice(e: Mapping[str, Any], duration: float, find: FindFont) -> Voice:
+def _font_voice(e: Mapping[str, Any], duration: float, find: FindFont, sample_rate: float) -> Voice:
     """``registerSoundfonts`` and ``getFontBufferSource`` (fontloader.mjs).
 
-    Silent until the zone is loaded. ``vib`` and the pitch envelope are not implemented.
+    Silent until the zone is loaded.
     """
     key = font_key(e)
     assert key is not None
@@ -378,6 +606,7 @@ def _font_voice(e: Mapping[str, Any], duration: float, find: FindFont) -> Voice:
         "loopEnd": zone.loop_end * scale,
         "frames": header.frames,
         **env,
+        **pitch(e, duration, sample_rate),
     }
     return Voice(
         f"dough_sample{header.channels}",
@@ -405,15 +634,37 @@ def _pink() -> Any:
     return total * 0.11
 
 
+def _dpw(phase: Any, freq: Any, before: float) -> Any:
+    """A sawtooth from its phase in [-1, 1), differentiated parabolic wave: less aliasing.
+
+    *before* is the phase's square one sample before the start.
+    """
+    step = freq * (4 / SampleRate.ir())  # d(phase^2) per sample is 2 phase * 2 freq / rate
+    square = phase * phase
+    slope = (square - Delay1.ar(source=square, x1=before)) / step
+    return Select.ar(selector=abs(step) > 1e-4, sources=[phase, slope])
+
+
+def _fade(freq: Any) -> Any:
+    """Chrome's oscillator table at *freq*: the fundamental fades out over the third of an
+    octave below the Nyquist frequency, as tables 400 cents apart drop it. Measured."""
+    return ((SampleRate.ir() * 0.5 / abs(freq)).log2_() * 3).clip(0, 1)
+
+
 def _source(name: str, freq: Any, density: Any) -> Any:
+    """A superdough source, frequency read every sample."""
     if name == "sine":
-        return SinOsc.ar(frequency=freq)
-    if name == "triangle":
-        return LFTri.ar(frequency=freq) * WAVE_LEVEL["triangle"]
-    if name == "square":
-        return Pulse.ar(frequency=freq, width=0.5) * WAVE_LEVEL["square"]
-    if name == "sawtooth":
-        return Saw.ar(frequency=freq) * WAVE_LEVEL["sawtooth"]
+        return SinOsc.ar(frequency=freq) * _fade(freq)
+    if name == "triangle":  # not LFTri: its phase runs away below 0 Hz
+        triangle = (LFSaw.ar(frequency=freq) * 2).fold2(1)
+        return triangle * (WAVE_LEVEL["triangle"] * _fade(freq))
+    if name in ("square", "sawtooth"):  # not Saw and Pulse: they read freq once per block
+        phase = LFSaw.ar(frequency=freq)
+        saw = _dpw(phase, freq, 0.0)
+        if name == "square":
+            shifted = phase + 1 - 2 * (phase >= 0)  # half a period on, starting at -1
+            saw = saw - _dpw(shifted, freq, 1.0)
+        return saw * (WAVE_LEVEL[name] * _fade(freq))
     if name == "white":
         return WhiteNoise.ar()
     if name == "brown":
@@ -440,30 +691,76 @@ def _env(b: SynthDefBuilder) -> Any:
     )
 
 
+def _exact_controls(prefix: str, level: float) -> dict[str, Any]:
+    """exact_envelope()'s controls, constant at *level* by default."""
+    controls = {f"{prefix}0": control(level, "ir")}
+    for i in range(1, SEGMENTS + 1):
+        controls |= {f"{prefix}{i}": control(level, "ir"), f"{prefix}t{i}": control(0.0, "ir")}
+        controls[f"{prefix}s{i}"] = control(float(EnvelopeShape.LINEAR), "ir")
+    return controls
+
+
+def _exact_env(b: SynthDefBuilder, prefix: str) -> Any:
+    envelope: list[Any] = [b[f"{prefix}0"], SEGMENTS, -99, -99]
+    for i in range(1, SEGMENTS + 1):
+        envelope += [b[f"{prefix}{i}"], b[f"{prefix}t{i}"], b[f"{prefix}s{i}"], 0]
+    return EnvGen.ar(envelope=envelope)
+
+
+def _pitch_controls() -> dict[str, Any]:
+    return {"vib": control(0.0, "ir"), "vibmod": control(0.0, "ir"), **_exact_controls("p", 0.0)}
+
+
+def _detune(b: SynthDefBuilder, quantum: bool = False) -> Any:
+    """The frequency ratio from ``vib`` and the pitch envelope.
+
+    *quantum* holds each value for 128 frames, as an ``AudioBufferSourceNode``'s k-rate
+    detune, at control rate: Sweep steps in double precision at control rate, float32 at
+    audio rate.
+    """
+    cents = SinOsc.ar(frequency=b["vib"]) * b["vibmod"] + _exact_env(b, "p")
+    if quantum:  # a voice starts on a control block, so blocks and render quanta align
+        first = Phasor.kr(stop=128 / BlockSize.ir()) < 0.5
+        cents = Latch.kr(source=A2K.kr(source=cents), trigger=first)
+    return (cents * (math.log(2) / 1200)).exp_()
+
+
 def _sample(channels: int) -> SynthDef:
     """An ``AudioBufferSourceNode``: linear interpolation, silent outside the buffer.
 
     A looping source plays from ``start`` to the loop end before it wraps, as Web Audio does;
-    a negative rate plays the buffer backwards with mirrored loop points.
+    a negative rate plays the buffer backwards with mirrored loop points. A source that is not
+    looping frees the voice when it leaves the buffer: ``onended`` releases superdough's chain,
+    cutting filter tails.
     """
     controls = {
         "out": control(0, "ir"), "buf": control(0, "ir"), "rate": control(1.0, "ir"),
         "start": control(0.0, "ir"), "loop": control(0.0, "ir"), "loopStart": control(0.0, "ir"),
         "loopEnd": control(0.0, "ir"), "frames": control(1.0, "ir"), **_envelope_controls(),
+        **_pitch_controls(),
     }  # fmt: skip
     with SynthDefBuilder(**controls) as b:
         # u: the position in the direction of play, increasing from sign(rate) * start
         sign = b["rate"].sign()
-        u = b["start"] * sign + Sweep.ar(rate=abs(b["rate"]) * BufSampleRate.ir(buffer_id=b["buf"]))
+        speed = abs(b["rate"]) * _detune(b, quantum=True) * BufSampleRate.ir(buffer_id=b["buf"])
+        u = b["start"] * sign + Sweep.ar(rate=speed)
         lo = (b["loopStart"] * sign).min_(b["loopEnd"] * sign)
         hi = (b["loopStart"] * sign).max_(b["loopEnd"] * sign)
         wrapped = lo + (u - lo) % (hi - lo)
         phase = Select.ar(selector=(u >= hi) * b["loop"], sources=[u, wrapped]) * sign
-        inside = ((phase >= 0) * (phase <= b["frames"] - 1)).max_(b["loop"])
+        # Past the last frame, Chrome interpolates toward 0 until the position reaches the
+        # buffer's length; BufRd holds the last frame. Reversed, the first frame is the last.
+        edge = (b["frames"] - phase).min_(phase + 1).clip(0, 1).max_(b["loop"])
+        inside = edge > 0
+        EnvGen.ar(  # frees the voice's group when *inside* falls
+            envelope=Envelope(amplitudes=[1.0, 1.0, 1.0], durations=[0.0, 0.0], release_node=1),
+            gate=inside,
+            done_action=14,
+        )
         sig = BufRd.ar(
             channel_count=channels, buffer_id=b["buf"], phase=phase, loop=0, interpolation=2
         )
-        env = _env(b) * inside
+        env = _env(b) * edge
         Out.ar(bus=b["out"], source=[x * env for x in sig] if channels > 1 else sig * env)
     return b.build(name=f"dough_sample{channels}")
 
@@ -512,6 +809,54 @@ def _filter(kind: str, channels: int) -> SynthDef:
     return b.build(name=f"dough_{kind}{channels}")
 
 
+def _shape(name: str, x: Any, b: Any) -> Any:
+    """One sample through a distortion curve (helpers.mjs), *b* holding its controls."""
+    k = b["k"]
+    if name == "scurve":
+        return (1 + k) * x / (1 + k * abs(x))
+    if name == "soft":
+        return (x * (1 + k)).tanh_()
+    if name == "hard":
+        return (x * (1 + k)).clip(-1, 1)
+    if name in ("fold", "sinefold"):
+        y = 1 - abs((x * (1 + 0.5 * k) + 1) % 4 - 2)  # sc's % is a floored modulo, as _mod
+        return (y * (math.pi / 2)).sin_() if name == "sinefold" else y
+    if name == "cubic":
+        third = b["t"] / 3
+        return ((x - third * x.cubed()) / (1 - third) * (1 + k)).tanh_()
+    if name in ("diode", "asym"):
+        g, bias = 1 + 2 * k, b["bias"]
+        neg = ((bias if name == "asym" else bias - x) * g).tanh_()
+        return ((((x + bias) * g).tanh_() - neg) * b["norm"] * (1 + k)).tanh_()
+    # chebyshev: the worklet's recurrence starts from (x, 1), so step i holds T(i - 1); its
+    # even steps add the odd polynomials. Past |x| = 2 the sum is past tanh's range in double
+    # precision, and T61 overflows float32 past about 4.
+    xc = x.clip(-2, 2)
+    two_x = 2 * xc
+    y, older, old = x, xc, 1.0
+    for i in range(2, 64):
+        older, old = old, two_x * old - older
+        if i % 2 == 0:
+            y = y + b["c"][i] * old
+    return (y * (1 + b["kl"] / 20)).tanh_()
+
+
+def _distort(name: str, channels: int) -> SynthDef:
+    """``distort-processor``: the gain stage, then a curve, then ``distortvol``, in place."""
+    controls = {"out": control(0, "ir"), "gain": control(DEFAULT_GAIN, "ir")}
+    controls |= {c: control(0.0, "ir") for c in ("k", "t", "bias", "norm", "kl")}
+    controls["post"] = control(1.0, "ir")
+    with SynthDefBuilder(**controls) as b:
+        shape = {c: b[c] for c in controls}
+        if name == "chebyshev":  # the worklet's weights of the even steps, computed once
+            shape["c"] = {i: (b["kl"] * (1.3 / i)).min_(2) for i in range(2, 64, 2)}
+        x = In.ar(bus=b["out"], channel_count=channels)
+        xs = list(x) if channels > 1 else [x]
+        y = [_shape(name, c * b["gain"], shape) * b["post"] for c in xs]
+        ReplaceOut.ar(bus=b["out"], source=y if channels > 1 else y[0])
+    return b.build(name=f"dough_distort_{name}{channels}")
+
+
 def _gate_def(channels: int, num_channels: int) -> SynthDef:
     """``StereoPannerNode`` (Web Audio's equal-power rules for mono and stereo input), postgain."""
     controls = {
@@ -555,17 +900,47 @@ def _gate_def(channels: int, num_channels: int) -> SynthDef:
     return b.build(name=f"dough_gate{channels}_{num_channels}")
 
 
+def _modulated(b: SynthDefBuilder, freq: Any, ratio: Any = 1.0) -> Any:
+    """(*freq* plus the FM bus when ``fm`` is set) times *ratio*, clamped to the Nyquist as Web
+    Audio clamps an oscillator's computed frequency."""
+    fm = Select.ar(selector=b["fm"], sources=[DC.ar(source=0), In.ar(bus=b["fmbus"])])
+    nyquist = SampleRate.ir() * 0.5
+    return ((freq + fm) * ratio).clip(-nyquist, nyquist)
+
+
+def _modulator(wave: str) -> SynthDef:
+    """``applyFM``'s modulator: *wave* at ``freq`` plus its input, times its envelope and amount.
+
+    It reads the next modulator's output from the FM bus, if any, and replaces it with its own.
+    """
+    controls = {
+        "fmbus": control(0, "ir"), "freq": control(440.0, "ir"), "amount": control(0.0, "ir"),
+        "fm": control(0.0, "ir"), "density": control(FM_NOISE_DENSITY, "ir"),
+        **_exact_controls("e", 1.0),
+    }  # fmt: skip
+    with SynthDefBuilder(**controls) as b:
+        x = _source(wave, _modulated(b, b["freq"]), b["density"])
+        ReplaceOut.ar(bus=b["fmbus"], source=x * _exact_env(b, "e") * b["amount"])
+    return b.build(name=f"dough_fm_{wave}")
+
+
 def synthdefs(num_channels: int) -> list[SynthDef]:
     defs = []
     for name in [*dict.fromkeys(OSCILLATORS.values()), *sorted(NOISES)]:
         controls = {"out": control(0, "ir"), "amp": control(SOURCE_LEVEL), "freq": control(440.0)}
         controls |= _envelope_controls()
         controls["density"] = control(CRACKLE_DENSITY, "ir")
+        pitched = name not in NOISES  # superdough's noise has no detune or FM
+        if pitched:
+            controls |= {"fmbus": control(0, "ir"), "fm": control(0.0, "ir"), **_pitch_controls()}
         with SynthDefBuilder(**controls) as b:
-            Out.ar(bus=b["out"], source=_source(name, b["freq"], b["density"]) * _env(b) * b["amp"])
+            freq = _modulated(b, b["freq"], _detune(b)) if pitched else b["freq"]
+            Out.ar(bus=b["out"], source=_source(name, freq, b["density"]) * _env(b) * b["amp"])
         defs.append(b.build(name=f"dough_{name}"))
+    defs += [_modulator(wave) for wave in [*FM_WAVES, *sorted(NOISES)]]
     defs += [_sample(1), _sample(2), _gate_def(1, num_channels), _gate_def(2, num_channels)]
     defs += [_filter(kind, c) for kind, *_ in FILTERS for c in (1, 2)]
+    defs += [_distort(name, c) for name in DISTORTIONS for c in (1, 2)]
     return defs
 
 
@@ -574,11 +949,14 @@ __all__ = [
     "OSCILLATORS",
     "SILENT",
     "Voice",
+    "DISTORTIONS",
     "adsr_values",
+    "distortion",
     "envelope_points",
     "filter_type",
     "filters",
     "font_key",
+    "pitch",
     "frequency",
     "midi",
     "synthdefs",

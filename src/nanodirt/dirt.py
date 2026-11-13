@@ -328,6 +328,9 @@ class Dirt:
         n = self.num_channels
         self.routing_buses = [int(self.server.audio_bus(n)) for _ in range(NUM_ROUTING_BUSES)]
         self.control_buses = [int(self.server.control_bus(1)) for _ in range(NUM_CONTROL_BUSES)]
+        # superdough FM: each modulator replaces it in turn, then the source reads it. Nodes run
+        # in order, so one bus serves every voice.
+        self.fm_bus = int(self.server.audio_bus(1))
         self.group = self.server.next_node_id()
         for i, out_bus in enumerate(self._out_buses[: self._num_orbits]):
             orbit = Orbit(
@@ -402,7 +405,7 @@ class Dirt:
         from .dough import SILENT, voice
         from .strudel import normalize
 
-        v = voice(params, self.num_channels, self._find_sample, self._find_font)
+        v = voice(params, self.num_channels, self._find_sample, self._find_font, self.sample_rate)
         if v is None:
             return self.play(normalize(dict(params)), timestamp)
         when = self._schedule(timestamp)
@@ -424,10 +427,18 @@ class Dirt:
         source = {"out": orbit.synth_bus, **v.controls}
         if v.sample is not None:
             source["buf"] = v.sample.buffer or 0
+        if v.modulators:
+            source |= {"fm": 1.0, "fmbus": self.fm_bus}
         gate = {"in": orbit.synth_bus, "out": orbit.dry_bus, **v.gate}
         msgs += [
             OscMessage("/g_new", group, 1, orbit.group),
             OscMessage("/s_new", v.source, -1, 0, group, *_pairs(_flat(source))),
+            *[  # each to the head: the last modulator runs first
+                OscMessage(
+                    "/s_new", name, -1, 0, group, *_pairs(_flat({"fmbus": self.fm_bus, **c}))
+                )
+                for name, c in v.modulators
+            ],
             *[
                 OscMessage(
                     "/s_new",
