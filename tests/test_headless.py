@@ -419,23 +419,34 @@ def test_code_without_setcps_keeps_the_cps() -> None:
 
 def test_slow_evaluation_drops_no_events() -> None:
     """Evaluation runs in a spare runtime, so the playing one keeps answering queries."""
+    started = threading.Event()
+
+    class Signalling(Strudel):
+        def evaluate(self, code: str) -> None:
+            started.set()
+            super().evaluate(code)
+
+    clock = FakeClock()
     played: list[float] = []
-    sched = Scheduler(Strudel, lambda c, t: played.append(t))
+    sched = Scheduler(Signalling, lambda c, t: played.append(t), clock)
     sched.evaluate('setcps(1)\ns("hh*8")')
-    sched.start()
+    started.clear()
+    slow = threading.Thread(
+        target=sched.evaluate,
+        args=('setcps(1)\nconst t0 = Date.now(); while (Date.now() - t0 < 1500) {}\ns("hh*8")',),
+    )
+    slow.start()
     try:
-        time.sleep(0.3)
-        start = time.perf_counter()
-        sched.evaluate(
-            'setcps(1)\nconst t0 = Date.now(); while (Date.now() - t0 < 600) {}\ns("hh*8")'
-        )
-        assert time.perf_counter() - start > 0.6
-        time.sleep(0.3)
+        assert started.wait(5)
+        for _ in range(10):  # a fake clock: OS scheduling delays cannot skip ticks
+            sched.tick()
+            clock.t += 0.1
+        assert slow.is_alive()  # the ticks did not wait for the evaluation
     finally:
-        sched.stop()
+        slow.join()
     assert sched.skipped_ticks == 0
     gaps = [b - a for a, b in zip(played, played[1:])]
-    assert len(played) > 10 and max(gaps) == pytest.approx(0.125, abs=1e-6)
+    assert len(played) >= 7 and all(g == pytest.approx(0.125, abs=1e-6) for g in gaps)
 
 
 def test_evaluation_prepares_the_next_cycles_before_they_play() -> None:
